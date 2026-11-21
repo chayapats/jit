@@ -58,6 +58,52 @@ def listing(p,recursive=False):
     if recursive and kind=='directory': walk(os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd),relative+'/')
   finally: os.close(fd)
  walk(anchored(p,True),''); return out
+def portable_data(p):
+ f=anchored(p)
+ try:
+  before=os.fstat(f)
+  if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size>1048576: fail('EACCES')
+  data=bytearray()
+  while len(data)<=1048576:
+   b=os.read(f,min(65536,1048577-len(data)))
+   if not b: break
+   data.extend(b)
+  after=os.fstat(f)
+  if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns): raise RuntimeError('ECHANGED')
+  return bytes(data)
+ finally: os.close(f)
+def portable_manifest():
+ files=r['files']; seen=set(); total=0
+ if not isinstance(files,list) or not 1<=len(files)<=64: fail('E2BIG')
+ for item in files:
+  p=item['path']; parts=p.split('/')
+  if not p or len(p.encode())>240 or len(parts)>16 or any(not x or x in ('.','..') or x.startswith('.') for x in parts) or '\\' in p or ':' in p or '%' in p or any(ord(c)<=32 or ord(c)==127 for c in p): fail('EACCES')
+  if p.lower() in seen or not isinstance(item['bytes'],int) or not 0<=item['bytes']<=1048576: fail('E2BIG')
+  seen.add(p.lower()); total+=item['bytes']
+ if total>16777216: fail('E2BIG')
+ text=json.dumps({'contract':'s16-working-tree/v1','files':files},sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+ if hashlib.sha256(text).hexdigest()!=r['treeSha256']: raise RuntimeError('ECHANGED')
+ return files
+def portable_location(committed=False):
+ ident=r['importId']
+ if len(ident)!=32 or any(c not in '0123456789abcdef' for c in ident): fail('EINVAL')
+ return path(root+('/restored-' if committed else '/.jit-import-')+ident)
+def portable_verify(folder,files):
+ expected={'.jit-manifest':'file'}
+ for item in files:
+  pieces=item['path'].split('/')
+  for i in range(1,len(pieces)): expected['/'.join(pieces[:i])]='directory'
+  expected[item['path']]='file'
+ entries=listing(folder,True)
+ if {item['name']:item['type'] for item in entries}!=expected: raise RuntimeError('ECHANGED')
+ for item in files:
+  data=portable_data(folder+'/'+item['path'])
+  if len(data)!=item['bytes'] or hashlib.sha256(data).hexdigest()!=item['sha256']: raise RuntimeError('ECHANGED')
+ for entry in entries:
+  if entry['type']=='directory':
+   f=anchored(folder+'/'+entry['name'],True)
+   try: os.fsync(f)
+   finally: os.close(f)
 try:
  if op=='init':
   for p in (root,tmp):
@@ -80,6 +126,51 @@ try:
   if stat.S_ISLNK(s.st_mode): fail('EACCES')
   result={'type':'file' if stat.S_ISREG(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'other'}
  elif op=='read': result={'data':base64.b64encode(filedata(r['path'])).decode()}
+ elif op=='portable_read': result={'data':base64.b64encode(portable_data(path(r['path']))).decode()}
+ elif op in ('portable_begin','portable_put','portable_commit','portable_inspect'):
+  files=portable_manifest(); stage=portable_location(); target=portable_location(True)
+  manifest=json.dumps({'contract':'s16-working-tree/v1','importId':r['importId'],'treeSha256':r['treeSha256'],'files':files},sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+  if op=='portable_begin':
+   f=anchored(root,True)
+   try:
+    if set(os.listdir(f))!={os.path.basename(tmp)}: fail('EACCES')
+    os.mkdir(os.path.basename(stage),0o700,dir_fd=f); os.fsync(f)
+   finally: os.close(f)
+   fd,name=parent(stage+'/.jit-manifest')
+   try:
+    f=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+    with os.fdopen(f,'wb') as stream: stream.write(manifest); stream.flush(); os.fsync(stream.fileno())
+    os.fsync(fd)
+   finally: os.close(fd)
+   result={}
+  elif op=='portable_put':
+   if portable_data(stage+'/.jit-manifest')!=manifest: raise RuntimeError('ECHANGED')
+   chosen=next((item for item in files if item['path']==r['relative']),None); data=base64.b64decode(r['data'],validate=True)
+   if not chosen or len(data)!=chosen['bytes'] or hashlib.sha256(data).hexdigest()!=chosen['sha256']: raise RuntimeError('ECHANGED')
+   fd,name=parent(stage+'/'+chosen['path'],True)
+   try:
+    f=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+    with os.fdopen(f,'wb') as stream: stream.write(data); stream.flush(); os.fsync(stream.fileno())
+    os.fsync(fd)
+   finally: os.close(fd)
+   result={}
+  elif op=='portable_commit':
+   if portable_data(stage+'/.jit-manifest')!=manifest: raise RuntimeError('ECHANGED')
+   portable_verify(stage,files)
+   import ctypes
+   libc=ctypes.CDLL(None,use_errno=True); rename=libc.renameat2
+   rename.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]; rename.restype=ctypes.c_int
+   fd=anchored(root,True)
+   try:
+    if rename(fd,os.path.basename(stage).encode(),fd,os.path.basename(target).encode(),1)!=0: raise OSError(ctypes.get_errno(),'renameat2')
+    os.fsync(fd)
+   finally: os.close(fd)
+   result={'path':target}
+  else:
+   try:
+    if portable_data(target+'/.jit-manifest')!=manifest: raise RuntimeError('ECHANGED')
+    portable_verify(target,files); result={'path':target}
+   except FileNotFoundError: result={'path':None}
  elif op=='observe':
   p=path(r['path']); token=observe(p)
   result={'token':token,'data':base64.b64encode(filedata(p)).decode() if token and r['content'] else None}

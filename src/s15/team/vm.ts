@@ -67,6 +67,7 @@ export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resour
     let closing: Promise<void> | null = null;
     const transfer = session.transfer;
     return { ...session, definitions: session.definitions.map(definition => ({ ...definition, async execute(value, call) { team.guardLease(lease); const result = await definition.execute(value, call); team.guardLease(lease); return result; } })),
+      ...(session.portable ? { portable: Object.freeze(Object.fromEntries(Object.entries(session.portable).map(([name, operation]) => [name, async (...args: never[]) => { team.guardLease(lease); const result = await (operation as (...args: never[]) => Promise<unknown>)(...args); team.guardLease(lease); return result; }])) as unknown as NonNullable<VmSession['portable']>) } : {}),
       ...(transfer ? { transfer: Object.freeze({
         async put(file: Parameters<typeof transfer.put>[0]) { team.guardLease(lease); const path = await transfer.put(file); team.guardLease(lease); return path; },
         async take(path: string) { team.guardLease(lease); const bytes = await transfer.take(path); team.guardLease(lease); return bytes; } }) } : {}),

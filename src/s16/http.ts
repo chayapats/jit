@@ -23,6 +23,8 @@ import type { BrowserActionCards } from "./computers/browser-cards";
 import type { ComputerNeedsYou } from "./computers/needs-you";
 import type { ScreenControl } from "./computers/screen";
 import type { ComputerDirectory } from "./computers/service";
+import type { WorkingStateService } from './computers/working-state';
+import { PolicyError } from '../s15/policy';
 import type { BotDirectory } from "./bots/service";
 import type { ConnectionDirectory } from "./connections/service";
 import type { S16ModelsPort } from "./models";
@@ -37,7 +39,7 @@ import type { ProtectedBrowserPort } from './protected-browser';
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; nativeNotifications?: NativeNotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; nativeNotifications?: NativeNotificationService<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; workingState?: WorkingStateService; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -300,6 +302,20 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const actor = currentOwner(); conversationOwnerView(app, actor, input.conversationId);
         const result = await options.browserCards.decide(actor, input, () => { currentOwner(); });
         currentOwner(); return json(result);
+      }
+      const workingState = /^\/api\/s16\/client\/computers\/working-state(?:\/(capture|imports)|\/(packages|receipts)\/([a-f0-9]{32}))?$/.exec(url.pathname);
+      if (workingState) {
+        if (!options.workingState) throw new AppError('vm_portable_unavailable', 503);
+        const owner = currentOwner() as unknown as import('../s15/policy').OwnerActor;
+        try {
+        if (request.method === 'GET' && !workingState[1] && !workingState[2]) return json(options.workingState.view(owner));
+        if (request.method === 'GET' && workingState[2] === 'packages') return json(options.workingState.manifest(owner, workingState[3]!));
+        if (request.method === 'GET' && workingState[2] === 'receipts') return json(options.workingState.receipt(owner, workingState[3]!));
+        if (request.method === 'POST' && workingState[2] === 'receipts') { const input = await body(request); if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new AppError('invalid_body'); return json(await options.workingState.inspect(owner, workingState[3]!)); }
+        if (request.method === 'POST' && workingState[1] === 'capture') return json(await options.workingState.capture(owner, await body(request)));
+        if (request.method === 'POST' && workingState[1] === 'imports') return json(await options.workingState.import(owner, await body(request)));
+        throw new AppError('method_rejected', 405);
+        } catch (error) { if (error instanceof PolicyError) throw new AppError(error.code, 409); throw error; }
       }
       const computer = /^\/api\/s16\/client\/computers(?:\/(commands))?$/.exec(url.pathname);
       if (computer) {

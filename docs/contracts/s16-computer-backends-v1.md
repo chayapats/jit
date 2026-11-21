@@ -1,0 +1,519 @@
+# s16-computer-backend/v1 and s16-working-state/v1
+
+COMPUTER16-01 (#427), [ADR 0102](../adr/0102-s16-computer-backends-and-portable-state.md).
+Selected implementation contract; no current service capability is advertised
+until the owning integration and its conformance are implemented.
+
+## Descriptor and ownership
+
+`s16-computer-backend/v1` identifies one registered provider (`qemu` or
+`firecracker`), immutable implementation/API version, stable computer identity,
+current generation and platform. It has an explicit capability set (shell,
+filesystem, sudo, external network, browser/desktop, cold recovery and strong
+stop), finite CPU/memory/disk/session/command/file ceilings and evidence basis
+(`configured`, `protocol_fixture`, or `host_verified`). `hypervisorVersion` stays null when an existing QEMU adapter has no protected
+version observation; its implementation/API contract is still explicit. Unknown
+remote host platforms stay null rather than borrowed from this controller or
+guest inventory. Profile features describe supported operations, not observed
+stop/restore success. Existing enrollment capability rows keep those separate.
+No display label grants a capability. The owner sees unavailable capabilities before selection. The protected session
+also includes the selected credential-free descriptor in its public Schway
+tool descriptions before tool use. QEMU guest egress is marked `restricted`
+by approved proxy routes; Firecracker guest egress is `unavailable`. Neither
+profile metadata nor tool descriptions supply work/dispatch authority.
+
+QEMU retains current enrollment/NIC/SSH binding. The selected Firecracker profile
+is `firecracker-offline-vsock/v1`, API v1.18.0 at immutable upstream commit
+`eaf83bb718a559d324613d566eaf776b31a62340`: Linux x86_64/aarch64 with KVM,
+no NIC/MMDS/extra/shared devices and a protected host-initiated SSH/vsock lane.
+No new cloud account, mandatory hosted vendor, default selection, policy rule
+or production host is implied.
+
+Each operation retains owner, policy, computer/generation, work/attempt,
+workspace lease, original operation ID, charged claim, deadline and output
+limits. Every actual dispatch and publication rechecks those owning fences.
+Enrollment revocation, boot drift, restore and source withdrawal reject late
+output. Existing private-computer assignment never becomes shared by export.
+
+The protected registry retains legacy `bindingMac` rows as NIC bindings. A new
+`binding` is a closed alternative: `{kind:"nic",mac}` or
+`{kind:"firecracker-vsock",instanceId,guestCid,guestPort,selectionSha256}`.
+The two fields cannot coexist. The vsock selection digest pins the protected
+host selection; it is not an API/guest attestation. Only the owning manager may
+report it after exact host verification and guarded forwarder construction.
+Readiness requires that forwarder's exact IPv4 loopback endpoint and the pinned
+SSH identity/known-host files. A fabricated NIC, a different listener or a guest
+NIC echo cannot substitute. Stable selection and host boot fences continue
+through health checks, placement, idle release/start, restore and retirement.
+
+VM store format 2 is an explicit compatible reader for physical bindings;
+merely opening a format-1 store does not migrate it. Adoption runs outside a
+transaction and checkpoints `user_version=2` into the actual SQLite header
+before a new binding row can be saved. A busy reader or WAL-only version refuses
+adoption. Older format-1 binaries therefore refuse adopted state even after
+composition rollback; current readers preserve version 2 on reopen. This fence
+does not implement portable ancestry: that later format requires its own
+monotonic adoption before the first transferred guest byte.
+
+## Bounded vsock lane
+
+The trusted host selects an absolute Unix socket and one configured guest SSH
+port. No model/guest input chooses either. It checks protected socket custody
+and the exact hypervisor binding before connection and revalidates after the
+handshake. The only negotiation sent is `CONNECT <guest port>\n`.
+Accept one bounded `OK <assigned host port>\n` line, then preserve every trailing
+byte exactly for SSH. The acknowledged host port is not the requested guest
+port; equality is not a valid check. Guest and assigned host ports are positive
+uint32 values below reserved `VMADDR_PORT_ANY` (`4294967295`). Reject malformed,
+oversized, non-ASCII or incomplete acknowledgement lines; subsequent bytes are
+opaque SSH data rather than an additional negotiation.
+
+Default handshake deadline is five seconds, independently shortened by the
+owning operation deadline/abort signal; the complete acknowledgement line is
+at most 32 bytes. Abort, EOF, error or failed final guard closes the original
+socket once and returns no usable channel. No negotiation retry, host network
+fallback, unbounded buffering or listener for guest-initiated host connections
+exists. Subsequent bytes are opaque SSH traffic, governed by its existing
+pinned-host-key, authentication, transport capacity and operation bounds.
+
+## Lifecycle and evidence
+
+The protected API transport permits only GET `/`, `/version`, `/vm/config` and
+the fixed PUT `/actions` `InstanceStart` body. Unix selection and the guard are
+pinned at construction, rather than changed by a mutable config object. There
+is no DNS/TCP fallback, redirect, ambient credential or automatic retry. Each
+original operation holds one of at most four slots through actual descriptor
+close, with an overall five-second preparation/connect/body/guard budget,
+8 KiB headers and 32 KiB strict UTF-8/duplicate-key-free object JSON. `not_sent`,
+`unknown` and complete `response` are transport observations; none alone proves
+the mutation's effect or authorizes a replacement. A mutation's durable intent
+and current authority must precede the API invocation.
+
+The exact-process primitive uses Linux `pidfd_open` (flags zero), nonblocking
+`poll` and one fixed `pidfd_send_signal(SIGKILL)` on the retained descriptor.
+The initial native host target is glibc Linux on x86_64/aarch64 (Ubuntu 24.04's
+glibc 2.39/Linux 6.8 or a separately evidenced compatible host). Host boot ID
+and kernel process start ticks must match the protected launch identity both
+before and after descriptor acquisition. There is no numeric-PID/process-group
+kill fallback. Opening a descriptor proves neither that this process is an
+approved VMM nor that it has an approved jail/image/device configuration.
+
+An explicit stop has a ten-second total preparation/exit/publication budget,
+current guards before signaling and publication, and at most one signal. Late
+guards, revocation, deadline, abort and signal failure cannot trigger a second
+signal. Once dispatch began, uncertainty retains the original descriptor for
+read-back. A confirmed `process_exited` observation is still weaker than
+`vm_stopped`: protected executable/jail/socket/configuration binding and disk/
+access settlement remain the owning manager's responsibility. Closing a lease
+only closes its descriptor. Injected protocol probes always produce
+`protocol_fixture`, never native host evidence; non-Linux production refuses.
+
+API profile inspection reads the exact version and closed configuration
+between matching instance states, within a separate 15-second total budget.
+It accepts one selected writeback/synchronous root disk, the selected kernel/
+arguments/optional initrd, selected CPU/memory and one selected vsock CID/path.
+NICs, extra disks, vhost-user sockets, MMDS, RAM-loaded/partial boot metadata,
+unknown/configured auxiliary devices and unreviewed paths refuse. These facts
+remain `api_reported`; an independent protected host process/executable/disk/
+socket binding is still required before readiness or isolation can be claimed.
+
+Management accepts only closed inspect/start/stop/checkpoint/restore/retire
+operations on one protected computer. It never accepts arbitrary API paths,
+argv, host files or a model-selected binary. Host prerequisites and immutable
+binary/kernel/root-disk pins are explicit. A configured API, successful guest
+probe or cooperative unit response cannot assert strong stop/isolation.
+
+The selected launch plan uses matching `jailer`/`firecracker` basenames, a
+separate non-root VMM UID/GID, fixed jailed `/kernel`, optional `/initrd`,
+`/rootfs.ext4`, `/config.json` and `/run/{api,vsock}.sock`. The raw disk ceiling
+is 128 MiB–64 GiB. Cgroup v2 narrows CPU to selected vCPUs, memory to selected
+guest RAM plus 256 MiB VMM overhead with swap disabled, and processes/threads to 128; file limits
+are 256 descriptors and the selected disk's byte ceiling. No daemonization,
+new PID namespace, arbitrary flag or additional network namespace selection is
+accepted. The foreground jailer retains its PID when it execs the VMM. Its
+three injected numeric timing fields are allowed in exact pinned argv order.
+
+This is preparation only. The owning installer/manager must verify binary/
+kernel/rootfs provenance, exact jail custody and the protected launch receipt.
+The pinned jailer automatically creates some host device nodes, including
+optional userfaultfd/Nitro nodes when available: preflight must refuse unreviewed
+host devices before launch, rather than treating the argv as complete jail
+proof. Config-file execution is one `launch_and_start` mutation. Its durable
+intent/current guard precedes spawn; response loss never authorizes duplicate
+launch or `InstanceStart`.
+
+The pinned jailer discovers optional `userfaultfd`/`nitro_enclaves` minors in
+`/proc/misc`; absence of a corresponding host `/dev` pathname is insufficient.
+The selected root systemd unit gives the unmodified jailer an effective empty
+inventory: `PrivateMounts=yes` and a read-only, nonrecursive bind of the
+installer-owned empty `<jailerBase>/.jit-proc-misc` file over `/proc/misc`.
+The launcher verifies that file and its ancestors are root-owned, not writable
+by another identity and not links before actual dispatch. This per-unit mount
+does not modify the host's `/proc` or device nodes. Missing mount support or
+failed unit preparation refuses launch; post-launch device checks remain
+required. See [systemd's documented private bind mounts](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#BindPaths=).
+The jailer also
+changes its jail root, `/dev`, `/dev/net` and `/run` to the selected VMM identity
+with mode 0700. Controller access to those paths is not implied by the argv:
+the installed protected host helper must own verification and the separately
+reviewed controller socket access. Neither changing owner host device nodes nor
+running the controller as the VMM identity supplies that contract. See the
+[pinned jailer implementation](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/src/jailer/src/env.rs).
+
+Keep transport closure, cooperative `guest_scope_empty`, strong `vm_stopped`
+and unknown outcomes distinct. Scope cancellation cannot stop siblings or
+silently escalate to a whole-machine stop. A hypervisor stop requires independent
+termination/access-settlement evidence for the exact process identity. Old
+generations and lost mutation claims remain fenced after restart.
+
+## Protected host custody composition
+
+The privileged-helper component `FirecrackerHostLease` consumes only an exact
+protected launch record: immutable binary/kernel/optional-initrd pins, the
+closed profile, original disk device/inode/size and initial seed hash, and the
+host boot/start-ticks/PID identity. Native observation requires Linux
+x86_64/aarch64 as the installed protected helper; the controller does not gain
+root or the VMM identity. Injected host/process ports always remain
+`protocol_fixture`. There is no guest/API-to-host attestation conversion.
+
+Before publishing `process_bound`, it verifies root-owned protected ancestors,
+the exact jailed executable and kernel/config pins, process root/exe identity,
+all threads' UID/GID/supplementary groups/capabilities/seccomp/NoNewPrivs and
+cgroup membership, exact CPU/memory/no-swap/pids limits, a dedicated-UID process
+census and the original disk FD. The jail admits only selected files, devices,
+sockets and the pinned jailer's bounded public ARM CPU facts. Open FDs admit
+the selected disk, read-only pinned boot files, reviewed KVM/event descriptors,
+null stdio and the particular API/vsock Unix listeners; an unknown host file,
+network socket, TUN FD or extra vCPU refuses. Linux 6.8's KVM vCPU descriptor
+names include the vCPU ID; see the
+[pinned kernel implementation](https://github.com/torvalds/linux/blob/v6.8/virt/kvm/kvm_main.c).
+The VMM environment is exactly `PATH=/usr/bin:/bin`, `LANG=C` and
+`HOME=/nonexistent`; the installed launcher must clear its inherited environment
+before jailer. No controller/provider/vault variable is inherited. The
+process census is capped at 8,192 entries / 16 MiB of status bytes, each
+status at 64 KiB; threads at 128, FDs at 256, Unix inventory at 128 KiB and each
+immutable input at 64 MiB. Complete acquisition/inspection has a 15-second
+publication deadline. Missing or raced evidence refuses rather than certifies.
+
+The stable `selectionSha256` is SHA-256 of canonical JSON under
+`s16-firecracker-host-selection/v1`: profile, host selection, immutable pins and
+disk `{bytes,initialSha256}`. Per-launch PID/start/boot and disk device/inode
+are checked independently; they are not part of that stable selection digest.
+A legitimate new cold launch can retain its logical binding while the current
+protected launch record still has to bind its exact new process/disk. The seed
+hash is an original installer/launch fact, not a claim about the mutable running
+disk's current contents. No digest grants execution authority or ancestry.
+
+An exact pidfd exit alone stays weaker than `process_and_disk_settled`. The
+latter additionally requires no process retaining the dedicated VMM UID,
+unchanged private original disk identity and a completed fsync, followed by
+current publication guards. Stop plus settlement share ten seconds. Failure
+retains the original lease for bounded read-back; it never sends another signal.
+Closing observation neither stops a VM nor releases an unresolved owning claim.
+
+After helper restart, `FirecrackerHostLease.recoverStopped` can read back an
+original exit without its lost pidfd. A different valid host boot, missing
+original PID or different kernel start ticks establishes only that the original
+process is gone; a still-present original process refuses. It never acquires,
+signals or follows a reused PID. The dedicated-UID census must still be empty,
+the closed jail and exact private disk unchanged, and fsync must complete under
+current authority before `process_and_disk_settled` is published. Malformed or
+inaccessible `/proc` evidence refuses. This does not authorize a replacement
+launch or reconstruct working authority after restart.
+
+`BoundFirecrackerComputer` composes that host lease with the actual closed API
+profile and host-initiated SSH/vsock forwarder. It issues no launch/InstanceStart.
+Native helpers require an installed positive IPv4 loopback port; an occupied
+port refuses without selecting another. Work/enrollment revocation rejects new
+channels; separately held original-instance cleanup authority can still stop
+that exact VM. Before stopping, all original API/SSH transports are closed;
+unknown disk settlement keeps the endpoint fenced and uses original read-back.
+Fixture basis remains visible in evidence. This component alone is not a
+registered manager; the concrete runtime/client/helper below composes durable
+launch, cold recovery and restart reconciliation. Real installed host custody
+remains separate. The pre-launch `/proc/misc` device gate above
+cannot be replaced by post-launch inspection. Linux/KVM live receipts remain
+separate from the real Unix HTTP/TCP protocol composition tests.
+
+## Durable host commands and retained root units
+
+`s16-firecracker-host-command/v1` carries only the original 32-hex request,
+computer, selected-host digest, expected revision/launch identity and closed
+launch/stop/checkpoint/restore/retire operation. Recovery tags are exact
+`jit-<32hex>` values; paths, argv, environment and arbitrary systemd properties
+are not inputs. The private helper SQLite journal uses application ID
+`0x4a46484a`, initial reader format 1 and checks both the checkpointed header and live
+WAL before writable initialization. Admission atomically advances the computer
+revision and reserves one original mutation before dispatch. Reusing a request
+with changed contents refuses; an exact duplicate returns its original receipt.
+Bounds are 64 computers, 4,096 retained jobs and nine active cold snapshots per
+computer. Exhaustion refuses rather than evicting idempotency evidence.
+
+The installed helper holds `FirecrackerHostLock` on a protected empty
+`.jit-host.lock` file using nonblocking exclusive libc `flock`. It retains the
+close-on-exec descriptor, checks its original device/inode and private regular
+file on dispatch, never unlinks/steals a PID lock and refuses another helper.
+Native driver dispatch and native journal restart recovery require this exact
+native lease. See the [open-file-description lock contract](https://man7.org/linux/man-pages/man2/flock.2.html).
+Accepted but undispatched requests become `not_sent`; dispatched
+requests become `unknown`, retain capacity and are read back without replay.
+Protected recovery context is bounded to 64 KiB and never exported in receipts.
+The driver must record its original unit/disk context before the corresponding
+effect. Cancellation or a 360-second deadline cannot clear the fence while a
+late local driver still exists; reconciliation has a separate 15-second budget
+and current read authority. Neither metadata nor a driver label proves a VM.
+
+The fixed root systemd unit is `jit-firecracker-<original request>.service`,
+with Type=exec, Restart=no, RemainAfterExit=yes, null stdio, private mounts and
+`env -i PATH=/usr/bin:/bin LANG=C HOME=/nonexistent` before the exact jailer
+plan. Systemd retains the process independently of controller/helper lifetime.
+Submission is one mutation, not readiness. Bounded `systemctl show` reads check
+the exact original unit, invocation, PID and closed properties. Missing metadata,
+PID zero or active/exited never certifies disk settlement or authorizes a new
+launch. Native submission requires prepared Linux/root custody; injected
+commands always remain `protocol_fixture`. The concrete composition is described
+below; real root-helper installation/acceptance remains pending.
+
+`FirecrackerHostPreparation` checks installed pinned binaries, guest-readable
+root-owned kernel/config/optional initrd, exact single-link disk custody, closed
+jail devices, current ARM CPU facts and the private empty inventory file. The
+dedicated UID must have no process, the socket scope must be empty and fsync
+must complete within the 15-second publication deadline. It runs again at
+systemd's actual `beforeStart` boundary. Missing/stale sockets refuse; this
+verifier does not delete them or install/configure anything. Installer-owned
+initial directories can be root-owned until the pinned jailer changes them;
+prepared guest inputs must remain readable after its UID drop. The result is
+`launch_prepared`, never readiness, strong stop or permission. Native use requires
+the original native singleton; injected I/O always remains a protocol fixture.
+
+`s16-firecracker-cold/v1` is an immutable same-computer cold disk manifest:
+computer, selected-host digest, original checkpoint request, exact snapshot tag,
+raw byte count and SHA-256. It is not portable state, a permission or a VM stop
+certificate. `FirecrackerColdStore` derives native jail/recovery paths from the
+protected selection, requires same-filesystem private directories, a regular
+single-link original disk and independent original-process/UID/disk settlement.
+Raw disk bounds remain 128 MiB–64 GiB. Copy/hash uses at most 1 MiB at a time,
+current guards around actual I/O and a 360-second deadline. Snapshots stage
+privately, fsync their read-only disk/manifest and publish by one directory
+rename. Restores verify the entire immutable snapshot, copy into an exclusive
+private file, retain its new device/inode in protected context before one atomic
+replacement, fsync both directories and recheck settlement against that new
+disk. The seed hash remains an original selection fact, not a current-disk hash.
+
+`s16-firecracker-cold-job/v1` retains original operation/request/tag, selection,
+old disk, completed manifest and optional prepared replacement before effects.
+Incomplete stages remain private and unknown. Read-back hashes only the original
+published snapshot or exact replacement inode; it never performs the pending
+rename, deletes a partial copy or replays an operation. Retirement moves only
+the exact snapshot into its original private tombstone before deleting raw
+bytes; the immutable manifest survives, and its tag cannot be reused. Interrupted
+retirement does not report success or automatically continue deletion. None of
+these primitives launches/stops a VM or releases the owning journal reservation.
+Injected settlement/path remapping remains `protocol_fixture`; actual raw-file
+tests on a Mac prove copy/rename/recovery semantics, not Linux/KVM settlement.
+
+## Concrete host runtime
+
+`FirecrackerHostRuntime` owns one installed selection. It explicitly adopts
+helper reader format 2, checkpointing the actual header before `fc_instances`
+stores `s16-firecracker-instance/v1` disk and original unit/invocation/process
+custody. Registration and initial custody are atomic; missing used custody is
+never recreated as a fresh computer. Opening format 2 never downgrades it.
+`s16-firecracker-runtime-job/v1` retains the original instance, admitted running
+state, cold context and expected original launch before corresponding effects.
+The helper keeps no work actor or model/provider state.
+
+Lifecycle composition closes original transports before one retained-pidfd stop.
+Cold restart removes only the two verified stale sockets after original process,
+UID and disk settlement, then submits one new original systemd unit. The fixed
+launcher may still be initializing: bounded readiness acquisition can repeat
+read-only custody/API observations, with every final publication requiring all
+checks. It never repeats the launch or accepts an explicit invalid API profile.
+The fixed forwarder remains in the root helper; closing the controller connection
+does not lose it. Concurrent observation/opening is coalesced and stop waits for
+in-flight opening to close. Active stop/restore/checkpoint fences old channels.
+
+Running checkpoints stop, publish the immutable snapshot and restart with a new
+launch identity. Lost restart replies verify that exact snapshot separately
+from the now-running mutable disk, then bind the original new unit. Restore
+recovery verifies the exact prepared replacement inode and bytes before retaining
+its new protected disk custody. Unknown stop reads the original exit/UID/disk
+facts without another signal. A timed-out original read-back remains physically
+fenced until its driver settles, even after the logical observation deadline.
+Ordinary inspect cannot clear an active original mutation. A configured never-run
+computer can report stopped only after actual prepared empty-scope/disk checks;
+that is distinct from an executed whole-machine stop receipt.
+Checkpointing requires a recorded prior launch so its exact original process
+and disk can be independently settled. The client and native runtime reject a
+never-launched checkpoint before either intent/admission marker; the first
+start remains usable. A previously launched, now-stopped computer still supports
+cold checkpoint without another start or stop signal.
+
+The private controller client uses a separate `DurableJournal` with application
+ID `0x4a46434a`, installation binding and an OS-backed process lease. Its origin,
+computer/digest and evidence basis are immutable across reopen. It retains up
+to 256 metadata/intent records within 64 MiB; exhaustion holds new admission
+instead of evicting an unknown or original receipt. The credential is read from
+protected setup/vault only and is absent from its records. Accepted-but-unsent
+client intents become `not_sent` on restart; dispatched intents become unknown.
+An authenticated idle server or missing receipt does not clear a dispatched
+intent: the original HTTP request might not have arrived yet. Only the exact
+original receipt and bounded read-back can settle it; the mutation is never sent
+again. A successful retry also rechecks current machine/launch facts before
+returning. Native clients reject a fixture evidence basis.
+
+`s16-firecracker-management/v1` pins one installation/computer to a loopback-only
+daemon and protected relay credential. It accepts only `state`, original
+`submit`, `receipt` and `reconcile`. The JSON body limit is 4 KiB, body acquisition
+deadline five seconds, response limit 16 KiB and active request limit four.
+Native ports are fixed positive values, never an occupied-port fallback.
+Credentials/installation mismatches and malformed/oversized inputs refuse before
+admission. Responses carry only closed computer/machine facts and original job
+receipts, never private context, host paths, arbitrary process selectors or
+diagnostics. The client validates complete command/revision/scope/basis and uses
+one deadline across headers/body. The trusted host/control-plane is outside the
+working execution boundary; this is not a public-network endpoint.
+
+The authenticated state includes the selected controller UID/GID. Native clients
+accept it only on the same Linux host under that actual nonroot identity; a
+configuration declaration cannot permit VMM/controller UID reuse. These private
+OS identity fields are not copied into public status or model-facing data.
+
+`s16-firecracker-host/v1` is a closed administrator-installed configuration for
+`src/firecracker-cli.ts`: separate private config/credential/state, fixed distinct
+ports and exact protected profile/host/pins/disk. Ordinary serving refuses missing
+state; explicit initialization refuses existing state, rechecked under the OS
+singleton. No account, payload, credential or production service is installed.
+Config/credential custody is pinned during serving. Shutdown fences new work,
+closes observation and drains original drivers before releasing journal/lock;
+it never infers that the systemd-owned microVM stopped.
+
+The actual `VmManagers` registry stores a pinned `firecracker` adapter and a
+write-only vault credential plus its separate original-intent journal. The same
+binding can update its credential under the authenticated owner without creating
+another physical alias; retargeting the computer/digest/origin refuses. The last
+owner-registered unbound manager is retained across controller reopen, so SSH
+checks use the selected backend, without changing existing work affinity.
+Pre-enrollment start is available only for this prepared adapter and refuses an
+already-enrolled manager. Its owner form is distinct from ordinary work admission;
+starting alone does not enroll or grant execution. Pending original starts show
+read-back instead of another start. Enrollment refuses a second physical identity
+alias. Owner-only setup, CSRF/expiry, write-only errors and English/Thai render
+states use the existing owning ingress and enrollment flow.
+
+## Reviewed portable state
+
+`s16-working-state/v1` is a same-installation immutable manifest of selected
+ordinary work files, independent of hypervisor/OS disk formats. It retains
+owner/generation, source computer/work/task identity, source private/resource/
+file/DATA15 ancestry, capture identity/time, format/platform compatibility and
+every relative path/size/SHA-256. It contains no permission, recipient consent,
+policy, command to execute, native/provider session or controller credential.
+
+Selected bounds: at most **64 ordinary files**, **1 MiB per file**, **16 MiB
+total**, **16 path components**, **240 UTF-8 bytes per relative path**, no empty,
+dot, traversal, absolute, encoded alternate path, symlink, hard link, device,
+socket or named pipe. Export/import never follows a link or copies an entire
+home/browser/credential/cache/control-state directory. Existing credential
+screening supplements these source/path/byte boundaries; it is not a universal
+secret detector against guest root. Selected bytes remain private source data.
+
+Export stages captured bytes privately and publishes only a complete immutable
+manifest/package. Import uses a fresh source-compatible destination workspace
+and one atomic subtree publication after all bounded parts/hashes are checked.
+Existing source work affinity is not rewritten. Destination authority must
+admit every original source and private scope before selection; destination
+VM ancestry is durably stamped before its first guest write. Subsequent work,
+artifact/memory publication and export continue through that ancestry.
+
+Owner preparation/review and mutation are distinct. An exact command pins the
+reviewed source manifest, destination identity/generation/authority and request
+ID. Current source or destination drift refuses. Response loss/restart uses
+the original command receipt; it cannot create a replacement import or replay
+work. Interruption leaves no completed export/import, never clears ancestry,
+and preserves unknown capacity until original cleanup/settlement is proven.
+
+The independent current source/policy/withdrawal ledger is never in the archive.
+Compatibility is explicit same-installation working files, not general host,
+RAM/disk, browser login, legacy/S14 or provider-session relocation. First
+adopted portable ancestry stamps a monotonic reader format before guest writes;
+older code refuses even after manifest rollback. Exact migration/reader and
+transport commands follow below.
+
+### Owning recovery protocol and reader 3
+
+VM reader format **3** extends formats 1/2 without downgrading physical bindings.
+`enablePortableState()` runs outside transactions and checkpoints the actual
+database header before captured or transferred bytes. Busy/WAL-only adoption
+refuses. Empty dormant tables alone do not adopt the format. Format-1/2 binaries
+refuse adopted stores even after a composition-manifest rollback.
+
+The manifest contains `capturedAt`, source owner/computer generation,
+work/attempt/CHAT/task/responsibility references, original authority digest,
+purpose/Bot/resource/selection references, complete file pins/TEAM sources and
+DATA15 descendants. `compatibility` is `s16-working-files/v1`, explicitly
+`same_installation` with execution compatibility `unverified`; nullable source
+backend and guest-reported platform are observations, not a binary portability
+promise. Files normalize to private mode 0600 and directories 0700. No ownership,
+executable mode, credential, callback, actor or historical grant is restored.
+
+The protected VM store retains at most 32 complete-or-failed capture identities
+(at most 512 MiB of file bytes) and 64 original import identities. No background
+eviction, unknown cleanup or ancestry reset frees these bounds. A complete
+package survives ordinary source sleep/expiry. An exact owner recovery admits a
+new finite file-recovery work under current policy and the original pinned
+purpose/Bot/resources/selection; the old work never resumes. Every actual file,
+TEAM and DATA15 source remains current before transfer and later destination
+use. Private source computers never become shared through recovery.
+
+The authenticated client API is under `/api/s16/client/computers/working-state`:
+
+- GET root: finite current source-work labels, complete manifests and original
+  import metadata. Reads start no guest session or transfer.
+- POST `capture`: exact `{requestId,workId,paths}`; returns only the complete
+  immutable manifest. A repeated original ID never starts capture again.
+- GET `packages/<id>`: original complete manifest after response loss.
+- POST `imports`: exact `{requestId,packageId,manifestSha256,vmId}`. Admission
+  binds the reviewed hash and a fresh workspace/attempt/current generation.
+- GET `receipts/<id>`: stored original receipt without guest I/O.
+- POST `receipts/<id>` with `{}`: explicit bounded read-back of that original
+  final subtree, never a pending write/commit replay.
+
+Cookie/Origin/CSRF and owner policy checks precede commands. Browser/native SDK
+metadata validation verifies the manifest's canonical SHA-256 using Web Crypto.
+No raw package byte download/upload, external archive URL or model tool exposes
+this protected API. Capture failures retain their identity and no complete file
+rows. `accepted` imports become `not_sent` on restart; `dispatched` imports become
+`unknown`. Both preserve their independent protected ancestry.
+
+Before the first destination dispatch, including staging metadata, reader 3,
+the immutable package reference, destination work/attempt/generation and tree
+hash are durable in `vm_working_imports`; DATA15 descendant/work/VM input stamps
+are durable separately. The VM service rechecks that exact `dispatched` stamp
+and current sources at actual transport start and publication. All later VM
+sessions inherit the recorded restrictions, including after cold restore.
+
+Host-only session operations `portable_read`, `portable_begin`, `portable_put`,
+`portable_commit` and `portable_inspect` use existing claimed POLICY/SSH runner
+paths. One fixed original import ID selects an exclusive staging directory.
+Each file is independently bounded and verified; publication rechecks the exact
+complete tree and calls Linux `renameat2(RENAME_NOREPLACE)` once. See the selected
+[glibc 2.39 ABI](https://github.com/bminor/glibc/blob/glibc-2.39/sysdeps/unix/sysv/linux/renameat2.c)
+and [Linux 6.8 flag contract](https://github.com/torvalds/linux/blob/v6.8/include/uapi/linux/fs.h).
+Missing ABI/filesystem support refuses without an overwrite fallback. Partial
+stages remain unconfirmed; original inspection only verifies a final tree and
+never completes it. Guest responses stay guest observations. Protocol fixtures,
+actual temporary-file/Python tests, Linux rename conformance and live KVM
+installation receipts are separately labelled.
+
+## Required conformance
+
+Use real protected service/session/client composition, actual bounded bytes and
+protocol fixtures/fake clocks/barriers. Prove the same filesystem/shell task on
+both adapters, truthful capabilities, exact original read-back, current private
+and source fences, revoked/stale late output, distinct stop evidence, complete
+Unix handshake bounds/cancellation, atomic capture/import interruption and
+ancestry retained on every unknown path. Test authored English/Thai loading,
+unavailable/error/reconnect/review states and packaged artifacts. Host/KVM,
+physical device/account and owner-cutover receipts remain separately labelled
+#431/#432. A source file, HTTP success or model completion alone closes nothing.

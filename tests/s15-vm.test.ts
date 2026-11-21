@@ -22,13 +22,13 @@ afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of d
 function fixture(options: Partial<import("../src/s15/vm/service").WorkingVmOptions> = {}) {
   const store = new VmStore(":memory:"); stores.push(store);
   const actor = {}, valid = new WeakSet([actor]); let revoked = false, beforeClaim: (() => Promise<void>) | undefined;
-  let afterSend: (() => Promise<void>) | undefined;
+  let afterSend: (() => Promise<void>) | undefined, beforeTransport: (() => void) | undefined, originalDenied = false;
   const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = [], scopeLifetimes: number[] = []; let stops = 0, empty = true, snapshot = 0; const retired: string[] = []; let stopBarrier: (() => Promise<boolean>) | undefined;
   const policy: VmPolicyPort = {
     assertCurrent(a) { if (!valid.has(a) || revoked) throw new Error("revoked"); },
     async claim(a, operation) {
       await beforeClaim?.(); policy.assertCurrent(a, operation as never); claims.push(operation);
-      return { async dispatch(start) { policy.assertCurrent(a, operation as never); return start(); }, publish(consume) { policy.assertCurrent(a, operation as never); return consume(); }, observe() {} };
+      return { guard() { if (originalDenied) throw new Error('original claim withdrawn'); }, async dispatch(start) { policy.assertCurrent(a, operation as never); return start(); }, publish(consume) { policy.assertCurrent(a, operation as never); return consume(); }, observe() {} };
     },
   };
   const state: VmMachineState = { state: "running", identity: "fixture-vm", boot: "boot1", cpuCount: 4, memoryBytes: 8388608, diskBytes: 1048576, network: "proxy-only", nicMac: "52:54:00:12:34:56" };
@@ -39,7 +39,7 @@ function fixture(options: Partial<import("../src/s15/vm/service").WorkingVmOptio
     override async openScope(_unit: string, ms: number, guard: () => void) { guard(); scopeLifetimes.push(ms); }
     override async closeScope() { stops++; return stopBarrier ? stopBarrier() : empty; }
     override async invoke(request: Record<string, unknown>, settings: Parameters<VmSshTransport["invoke"]>[1]) {
-      settings.beforeStart(); sends.push(request); await afterSend?.();
+      beforeTransport?.(); settings.beforeStart(); sends.push(request); await afterSend?.();
       if (request.op === "init" || request.op === "write") return {};
       if (request.op === "spawn") return { stdout: Buffer.from("guest result").toString("base64"), stderr: "", exitCode: 0, timedOut: false, truncated: false, totalBytes: 12 };
       if (request.op === "realpath") return { path: request.path };
@@ -50,11 +50,17 @@ function fixture(options: Partial<import("../src/s15/vm/service").WorkingVmOptio
   const service = new WorkingVmService({ store, policy, managers: new Map([["mgr", manager]]), transport: () => new Transport(endpoint), now: () => 100,
     requireOwner: a => { if (a !== actor) throw new Error("owner required"); }, ...options });
   return { store, service, actor, manager, state, claims, sends, scopeLifetimes, revoke: () => { revoked = true; }, setBeforeClaim: (f: () => Promise<void>) => { beforeClaim = f; },
-    setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setEmpty: (value: boolean) => { empty = value; }, setStopBarrier: (f: () => Promise<boolean>) => { stopBarrier = f; }, retired, stops: () => stops, snapshots: () => snapshot };
+    setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setBeforeTransport: (f: () => void) => { beforeTransport = f; }, denyOriginal: () => { originalDenied = true; }, setEmpty: (value: boolean) => { empty = value; }, setStopBarrier: (f: () => Promise<boolean>) => { stopBarrier = f; }, retired, stops: () => stops, snapshots: () => snapshot };
 }
 const open = (f: ReturnType<typeof fixture>, workId = "work1", extra = {}) => f.service.openAttempt(f.actor, { vmId: "vm1", workId, attemptId: `attempt_${workId}`, ...extra });
 
 describe("working VM authority/lifecycle", () => {
+  test('the original charged claim is rechecked after transport preparation before a guest mutation', async () => {
+    const f = fixture(), session = await open(f), sent = f.sends.length;
+    f.setBeforeTransport(() => f.denyOriginal());
+    await expect(session.backend.writeFileAtomically(session.backend.workspaceRoot + '/late.txt', 'late')).rejects.toThrow('original claim withdrawn');
+    expect(f.sends.length).toBe(sent); await session.close();
+  });
   test("two works share the VM, have different workspaces/units; third waits", async () => {
     const f = fixture(), a = await open(f), b = await open(f, "work2");
     expect(f.scopeLifetimes.every(ms => ms > limits.commandMs && ms <= limits.sessionMs)).toBe(true);

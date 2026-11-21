@@ -124,10 +124,14 @@ export interface S15WebComputerPool<Actor> {
   nextId(actor: Actor): string;
   /** Write-only registration of the hypervisor adapter an added computer is bound to (`VmManagers.register`). */
   registerManager?(actor: Actor, input: S15ManagerInput): void;
+  /** Prepared offline helper available for initial SSH verification; never an enrollment/readiness fact. */
+  preparedManager?(actor: Actor): { id: string; pending?: boolean } | null;
+  startPrepared?(actor: Actor, managerId: string): Promise<void>;
 }
 /** Owner-typed management adapter for an added computer. The Proxmox token is write-only and never echoed. */
 export type S15ManagerInput = { kind: "lima"; instance: string }
-  | { kind: "proxmox"; baseUrl: string; node: string; vmid: number; token: string; proxy: { address: string; port: number } };
+  | { kind: "proxmox"; baseUrl: string; node: string; vmid: number; token: string; proxy: { address: string; port: number } }
+  | { kind: "firecracker"; origin: string; computerId: string; selectionSha256: string; token: string };
 
 /** Owner-typed finite amount. Currency and period come only from `budgetOptions`. */
 export interface S15BudgetEntry { currency: string; spendMinor: string; periodId: string }
