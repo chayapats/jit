@@ -5,8 +5,9 @@ Status: OPS16-01 implementation in progress in
 commands adopt/inspect protected operations metadata, capture a current protected
 control-plane point, abort an interrupted backup and explicitly retire receipted
 historical points or independently owned temporary staging. The authenticated
-client additionally exports ordinary current content/settings. Forward restore
-and complete upgrade/uninstall remain in progress.
+client additionally exports ordinary current content/settings. Protected forward
+repair restores only exact missing current immutable bytes. Complete selected
+service/client upgrade/fallback/uninstall acceptance remains in progress.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
 Run from the verified selected source package, with its pinned Bun and explicit
@@ -50,8 +51,7 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
-cutover; forward recovery still needs quarantine/activation,
-compatible release/client lifecycle selection.
+cutover; compatible release/client lifecycle acceptance remains separate.
 
 ## Ordinary owner export
 
@@ -173,6 +173,59 @@ removing their retained point. Legacy unowned corrupt staging refuses retirement
 a path or self-hashed failed metadata cannot supply provenance. Logical abort of
 an absent point can retain such legacy bytes without inventing ownership.
 
+## Forward repair of missing current immutable bytes
+
+Stop the selected service and let its original resources/shared installation
+leases close conclusively. Keep the current installation, operations journal,
+independent receipts, configuration, credentials and native/working state in
+place. Run the verified compatible package against an already retained point:
+
+```sh
+bun run s16:ops restore --s15 --config /absolute/s15-runtime.json --request-id original_restore_id --point-id retained_point_id
+```
+
+The operator supplies opaque request/point IDs, never archive, live or scratch
+paths. It authenticates the complete retained point and completed backup, deeply
+verifies public native ancestry in private quarantine, and independently receipts
+complete current SQL/native/FILE/GitHub/helper/external/package custody before
+preparation. Current SQL chooses the missing immutable members; historical SQL
+never chooses current authority. Required missing/corrupt current ledgers, native
+or parser state refuse without initializing or copying them from the point.
+
+Only an absent current FILE/GitHub pin with exact candidate bytes can be repaired.
+One missing pin without exact candidate bytes refuses the whole operation before
+publication. Present corrupt/unsafe bytes refuse untouched. Intact newer bytes
+remain, and withdrawn/unreferenced historical members stay quarantined. A missing
+registered byte parent requires independently journalled original empty ownership.
+The immutable original plan pins every target's prior absence, expected hash/size,
+verified source and private same-parent temp inode before the first byte write.
+
+Retry an interrupted command with the same config/request/point. Owned partial
+temps resume only after their whole existing prefix matches the original source.
+Atomic hard-link publication refuses an occupied target; only the original temp
+name is unlinked after parent fsync. Both-name and target-only readback retain the
+same inode/hash and exact link counts. Missing/substituted owned paths, unknown
+aliases, changed current facts or unsupported publication refuse without replacement.
+Complete current writer cuts protect publication and final observation; asynchronous
+native/helper validation runs only after conclusive cut release. Unknown native/SQL
+close retains the exact original resource capability and installation/CHAT exclusion.
+
+A complete response contains only original operation/request/point IDs, cohort/
+plan hashes and receipt revision. It clears admission only after current readback
+and original resource disposal. Repeating a completed request returns that stored
+receipt before reading old staging: even a later withdrawal cannot be resurrected.
+Current CHAT/artifact/lineage/expiry/recipient/private guards still decide release.
+No work, unknown effect, charge, speech, notification or native session is replayed
+or refunded by copying bytes. Credentials, client sessions and working disks are
+retained, never imported from history.
+
+This is not bare recovery after losing current authority or a disk/device rollback.
+Combined recovery staging is bounded and is retained after completion; it is not
+automatically evicted. `retire-staging` currently selects terminal backup staging,
+not restore staging. Complete restore-staging retirement and compatible aggregate
+service/client lifecycle remain pending. See
+[`s16-forward-payload-repair/v1`](../contracts/s16-forward-payload-repair-v1.md).
+
 ## Copied-package adoption drill
 
 The [deterministic package drill](../../ops/evidence/s16-operations-adoption.ts)
@@ -229,8 +282,9 @@ Actual SQL writer reservations remain held through the final current receipt,
 after asynchronous public-native/helper verification has completed. Missing or
 changed prepared state refuses; an unknown close retains the exact original
 resources and installation/CHAT leases. Current SQL/native state stays in place.
-These are preparation components, not a shipped forward-restore command, payload
-activation, admission clearance or complete service/client lifecycle acceptance.
+These preparation components do not activate bytes on their own. The protected
+coordinator below adds no-replace publication and original admission clearance;
+complete service/client release lifecycle acceptance remains separate.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all

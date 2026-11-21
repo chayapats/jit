@@ -21,8 +21,8 @@ import { createFixturePaymentAdapter, FixturePaymentPort } from '../../src/s15/p
 export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 export const bound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 32768, activeMs: 10000 });
-/** Boots the production composition in-process. Every model and VM transport is scripted; no inference or live account is used. */
-export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption'], tune?: (options: S15CompositionOptions) => S15CompositionOptions, registerTeam = true) {
+/** Boots production composition with scripted model/VM transports. Optional ownerProof binds real fixture login across reopen. */
+export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption'], tune?: (options: S15CompositionOptions) => S15CompositionOptions, registerTeam = true, ownerProof?: () => unknown) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'jit-composed-'))), directory = join(parent, 'protected');
   let now = 1000, generation = 1, sourceLive = true, service!: Awaited<ReturnType<typeof composeS15>>, turn = 0;
   const google = googleFixture(), engine = recordEngine();
@@ -102,7 +102,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
   });
   const route: import('../../src/s15/model').ApprovedModelRoute = { selection: choice, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: bound(), rank: { ordinary: 0, difficult: 0 } };
-  service = await composeS15(options(true)); let owner = service.policy.owner.authenticate(proof);
+  service = await composeS15(options(true)); let owner = service.policy.owner.authenticate(ownerProof ? ownerProof() : proof);
   service.policy.owner.install(owner, 'install', 0, policy);
   if (registerTeam) for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: workspaceReadOnly && resource.id === 'computer' ? ['read'] : ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
   service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
@@ -117,7 +117,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     async raw(path: string, body: BodyInit, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/octet-stream', ...supplied }, body })); },
     async form(path: string, fields: Record<string, string>, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded', ...supplied }, body: new URLSearchParams({ csrf, requestId: uid(), ...fields }) })); },
     async chat(text: string, commandId = uid()) { const command = { contract: 's15-conversation/v1' as const, requestId: commandId, conversationId: 'conversation', text, continuation: null }; const response = await this.request('/api/s15/conversations/conversation/messages', 'POST', command); if (response.status !== 202) throw Error(await response.text()); await service.conversation.drain(); return service.conversation.view(owner, commandId); },
-    async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(proof); },
+    async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(ownerProof ? ownerProof() : proof); },
     async close() { await service.close(); protocol.close(); google.f.cleanup(); recordService.close(); rmSync(parent, { recursive: true, force: true }); },
   };
 }

@@ -1,5 +1,5 @@
 ---
-status: selected recovery contract; writer-cut, staging, candidate, current-byte/native and complete current-preparation components implemented; activation and aggregate acceptance pending
+status: protected preparation and no-replace payload repair implemented; aggregate operations acceptance pending
 date: 2026-11-21
 scope: OPS16-01; S16-AC21; FR-04/15/18/23/35/38; NFR-02/04/05/08/09/12
 ---
@@ -62,7 +62,8 @@ Before activation, persist the original operation/fence, independent current
 cohort receipt and immutable repair plan. Bind exact prior/target bytes and
 identities, [independently owned staging](../contracts/s16-recovery-staging-v1.md)
 and per-member progress outside targets.
-Use only enumerated atomic file replacement and parent fsync; do not replace
+Use [ADR 0119's no-replace publication](0119-s16-noreplace-forward-payload-publication.md)
+and parent fsync; do not replace
 directories with locks, overwrite changed/unowned targets, guess deletion from
 a suffix or copy archive SQL. Retry recognizes only the original plan and
 prior/target identities. New current facts invalidate preparation and retain the
