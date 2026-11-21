@@ -59,3 +59,53 @@ The initial ARM64 CI shard 5 failed when a crash-test marker became visible befo
 The first macOS actual WAV included an `FLLR` padding chunk and was refused by synthesis validation. The corrected parser accepts that bounded padding; an independent fixture keeps canonical capture strict. The Linux source build initially produced a group-writable executable, correctly refused by artifact validation; the supplied artifact's mode was corrected before proof, without changing its hash. Linux `tiny.en` misrecognized the eSpeak NG sentence (including "quick brown fox"). That run failed the unchanged assertions and is not accepted evidence. Selecting the separately pinned `base.en` model passed the same test. These results do not establish broad recognition quality.
 
 Thai copy/layout is tested; Thai speech accuracy is unverified because these proof models/voices are English. Operators must validate their selected multilingual model/voice. Physical microphone permission/revocation, real mobile audio/background behavior, other speech platforms/languages, accounts and owner-host cutover remain #431/#432. Linux x64 deterministic CI is separate from actual ARM64 speech proof. Subsequent continuous call, barge-in and reconnect delivery is recorded separately in the [CALL16-01 evidence](s16-voice-call-proof.md); this original standalone proof does not establish that later behavior. Parent #392 and full S16-AC15/AC22 acceptance stay open. No production deployment, standing-policy change, default-runtime cutover, historical scope migration or private-data disclosure follows from this proof.
+
+## Current convergence source on Linux
+
+Both existing opt-in native cases were repeated at clean source
+`beab27ae9c276c200189c6e744e195ffcae70db7`, the source of the
+[completed deterministic delivery](s16-delivery-proof.md). The actual Linux run
+at `2026-11-21T18:23:52.866Z`–`2026-11-21T18:23:59.689Z` completed:
+**2 pass, 0 fail, 37 assertions, 6.72 seconds**. This current-source record includes
+both standalone dictation/playback and the later continuous-call case; it does
+not relabel the older runtime proof above.
+
+The source archive was the independently checked same-commit native-build
+archive `9f01cffe5f472511f8ecb211f50e8d8c16d9e7ad73d92c65e8076df34759b319`.
+Its full public tree matched the independent Git snapshot seal
+`62d4470714998719b5c6dbe0d3b0004edab7724d0abda4c21bcda9f013d46bbd` before
+and after execution. The supplied CLI was rebuilt in the disposable Ubuntu
+24.04.5 arm64 VM from the same pinned whisper.cpp source archive described above.
+It used CMake 3.28.3-1build7, Release/two build jobs and the same disabled
+native/OpenMP/BLAS/CUDA/Vulkan/curl/test flags, with CPU-only runtime arguments.
+The supplied English model and installed eSpeak NG 1.51+dfsg-12build1 were pinned
+separately; no Jit source or owner configuration was changed.
+
+| Current Linux artifact/record | SHA-256 |
+| --- | --- |
+| Actual `whisper-cli` | `8b99f4db910543de440185fb50bd941c7fe97151d7e0b05964baef781b482fc5` |
+| Complete native build tree | `baf1b915389cffe4bc92089231d19d1cdfe955d3d985324f3578dec2c9c20ff6` |
+| English `base.en` model | `a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002` |
+| eSpeak NG executable | `89402b6a13d29ab2edb0570c809796751b22a5d031828897cfb1b370dafa9c29` |
+| Source/artifact before-after receipt | `150d22e6cde3ea8a28637ccf3cadad8051945d22575713fbd85dd06fad687e72` |
+| Standalone native receipt | `65070cc188dd9b6f2ccb35ce9984a1c597548e77e730c96cb1da86e87130680d` |
+| Native call receipt | `ed2eece10113e274f7c156e3945c5cf36f535d437123683616c8b798d0821c6f` |
+| Observed Bun result log | `f898cbf1e7d0c50fe5eaf81389b3e68374ad33a0144bc9d9e10928baaaed1112` |
+| Collector | `be823a88257ac59c4235a88e82c6972d5a7919a3543d8ea238b0af206a7fbac2` |
+
+The actual synthetic input was 3,091.1875 ms and transcribed the exact public
+sentence. The standalone guarded reply was 2,531 ms, charged 5,623 local audio
+milliseconds, with no reserved or conservative charge. The actual call completed
+two transcriptions/two syntheses and exactly two CHAT/steer requests, including
+accepted-response loss/original-receipt recovery, duplex and mute/resume fences.
+Its final charge was 11,046 local audio milliseconds, with zero reserved or
+conservative charge. Model/VM execution and owner decisions remain scripted.
+
+Source, native build tree, executable, model and synthesis pins matched again
+after execution. The task-owned VM was shut down and its `Stopped` state read
+back. Raw receipts, tools/configs and build logs remain private. Together with
+the separately recorded current-source macOS run, this supplies actual configured
+local speech evidence on those named platforms. It does not rewrite the earlier
+delivery receipt, establish other platforms/Thai recognition or replace physical
+microphone/device, private-account and owner-adoption evidence. Only public
+synthetic audio was used; no training or provider/billing call was performed.

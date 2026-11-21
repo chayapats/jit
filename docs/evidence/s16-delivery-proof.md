@@ -140,3 +140,14 @@ distribution seals matched before/after; the public screenshot was inspected
 and task-VM shutdown verified. This is a separately supplied host Chromium
 fixture, outside the 885 matrix case executions and without private-account,
 production/nested-VM, physical-device or owner-adoption acceptance.
+
+## Later same-source Linux local speech supplement
+
+The [current Linux speech proof](s16-local-voice-proof.md#current-convergence-source-on-linux)
+also executed both unchanged native speech/call cases at `beab27ae`: 2 pass,
+37 assertions, 6.72 seconds using actual pinned CPU whisper.cpp/English `base.en`
+and eSpeak NG. Full source, native build and artifact pins matched before/after;
+the task VM was shut down and verified. Actual configured local speech is now
+separately observed on both macOS arm64 and Ubuntu arm64 at this source.
+The immutable delivery receipt is unchanged; physical/Thai/other-platform,
+private-account, nested-VM and exact owner-host obligations remain separate.
