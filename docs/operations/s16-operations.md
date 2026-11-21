@@ -97,8 +97,11 @@ original uninstall in current control. Keep `.s16-selector` current metadata;
 never delete its job/locator files or a controller fence to force admission.
 Missing receipts or different occupied units refuse without reconstruction or
 overwrite. Historical points/ordinary exports cannot grant root unit authority.
-Fresh-selected installation and final owning-client aggregate acceptance remain
-explicitly pending; deterministic adapter tests are not Linux/device/live proof.
+The [owning lifecycle proof](../evidence/s16-service-release-proof.md) couples this
+dispatcher to actual sealed owning service/client processes and current facts,
+with explicit manager/VM/readiness fixture ports. Fresh-selected installation
+and final aggregate acceptance remain pending; these tests are not Linux/device/
+live proof.
 
 The trusted root coordinator keeps a retained sealed operator, original private
 job plans and root process exclusion. It stops the controller conclusively,

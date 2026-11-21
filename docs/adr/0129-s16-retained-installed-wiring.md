@@ -77,6 +77,10 @@ Deterministic tests use actual sealed helpers/current SQL/native namespace,
 fixed filesystem publication and process exclusion. Manager/account/VM/HTTP
 ports are explicit fixtures. Partial removal/restoration resumes original plans;
 changed current SQL, missing independent original uninstall, unperformed intent
-and occupied different unit custody refuse. Actual owning-client uninstall/
-reinstall, fresh-selected installation and final aggregate matrix remain
-separate acceptance work; this decision does not certify those outcomes.
+and occupied different unit custody refuse. The separate
+[owning lifecycle proof](../evidence/s16-service-release-proof.md) now couples
+this dispatcher to actual sealed owning service/client processes with current
+withdrawal/private/policy/unknown-effect facts and fresh work after reinstall.
+Account/systemd/VM/readiness ports remain explicit fixtures. Fresh-selected
+installation, final aggregate matrix and real-host enforcement remain separate
+acceptance work.

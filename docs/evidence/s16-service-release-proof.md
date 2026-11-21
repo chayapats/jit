@@ -4,8 +4,9 @@ Scope: OPS16-01; S16-AC21; FR-04/15/18/23/35/38;
 NFR-02/04/05/08/09/12. This extends
 [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) and the
 [guarded selection contract](../contracts/s16-guarded-release-selection-v1.md).
-Installer/systemd routing, uninstall and actual Linux/owner-host acceptance
-remain separate requirements.
+It also exercises [ADR 0129's installed wiring dispatcher](../adr/0129-s16-retained-installed-wiring.md)
+over actual service processes. Fresh-selected setup, final aggregate and actual
+Linux/owner-host acceptance remain separate requirements.
 
 `tests/s16-ops-service-release.test.ts` builds sealed immutable earlier
 `23cfb85d` and current packages with their actual locked dependencies. Each
@@ -14,6 +15,16 @@ stores and supported Schway public host. The same actual sealed shared client
 retains the original owner session/CSRF and request identities through A → B
 and A → B → A. Private IPC replaces only the HTTP wire for deterministic
 transport; no service/authority implementation is emulated.
+
+A third journey upgrades to B, then uses B's actual sealed installed wiring
+dispatcher and helper processes to uninstall/reinstall the current service.
+Its config/state use canonical paths inside the disposable host root. Actual
+fixed root-owned unit files disappear and return byte-for-byte; the existing
+config and owner session remain. Scripted systemd/account ports bind real
+process PIDs and wait for actual close/exit/start. The readiness transport checks
+the actual client bootstrap; this is not rendered-login or real HTTP evidence.
+No credential-service unit is created in this owning fixture; its separate
+presence/activation path is covered by installed-wiring adapter conformance.
 
 Initial state comes from the shipped earlier CLI and owning owner/policy/TEAM/VM
 writers. Actual file-to-artifact work uses scripted providers, genuine service
@@ -46,6 +57,18 @@ receipts, owner generation/session, private retirement, owner-stopped VM, charge
 unknown slip and one external payment invocation remain. Startup/maintenance
 does not replay original model/VM/payment work. Historical root-job retry keeps
 the active process and new work untouched.
+
+Before uninstall, the same client produces withdrawal/private retirement and a
+new policy revision. Its current receipts, conservative usage/unknown slip,
+owner-stopped private computer, private assignment and artifact withholding
+survive reinstall. An independent persistent VM port stops only fixture VM
+states while the controller is actually closed; those explicit management
+counter changes remain distinct from unchanged model/interpreter/VM-transport/
+payment/reconcile counters. It does not seed controller data. Restoring original
+wiring boots the same selected package with attach mode, preserves the original
+cookie/CSRF/session, refuses duplicate payment and runs fresh artifact work under
+the current policy. Healthy dispatcher retry preserves the actual active PID and
+all external counters. No historical SQL/native/configuration is restored.
 
 Run `bun test --timeout 30000 tests/s16-ops-service-release.test.ts`.
 `JIT_S16_SERVICE_RELEASE_RECEIPT` optionally writes a fresh absolute private

@@ -84,6 +84,9 @@ wiring metadata alongside the installation; historical points are not authority
 to reconstruct it. Missing root/current authority requires separate diagnosis.
 
 Conformance uses actual sealed helpers, owning current SQL/native namespace and
-root filesystem/leases. Account, manager, VM-stop and HTTP ports are scripted
-disposable fixtures, not real Linux/UID/VM/credential-service enforcement or
-owning-client acceptance. No external account/device is used.
+root filesystem/leases. The separate [owning lifecycle proof](../evidence/s16-service-release-proof.md)
+couples the actual sealed dispatcher to actual owning service/client processes,
+original current work/authority/unknown facts and fresh work after reinstall.
+Account, manager, VM-stop and readiness ports remain scripted disposable
+fixtures, not real Linux/UID/VM/credential-service enforcement. No external
+account/device is used.

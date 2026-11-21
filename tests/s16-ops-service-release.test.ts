@@ -13,6 +13,8 @@ import { spawnRunner } from '../src/ops/supervisor';
 import { canonical } from '../src/s15/conversation/validation';
 import { opsDirectory, opsWrite } from '../src/s14/ops-files';
 import type { JitClient } from '../src/s16/client';
+import { s16WiringLayout } from '../ops/package/installer/s16-wiring-value';
+import type { CommandRunner } from '../src/ops/supervisor';
 
 let root: string, prefix: string, bun: string;
 const packages: { path: string; hash: string; harness: string; sourceCommit: string; lockHash: string; dependencyHash: string; dependencyFiles: number }[] = [], cleanup: (() => Promise<void>)[] = [];
@@ -77,14 +79,15 @@ async function host(pkg: typeof packages[number], input: { mode: 'seed' | 'attac
   } };
 }
 
-for (const fallback of [false, true]) test('actual owning client/service ' + (fallback ? 'retains trial withdrawals, private retirement, policy and unknown effect through compatible fallback' : 'retains original work and credentials through compatible package upgrade'), async () => {
-  const state = realpathSync(mkdtempSync(join(root, 'state-'))), directory = join(state, 'installation'), configPath = join(state, 'config.json'), externalDirectory = join(state, 'external'), authPath = join(state, 'owner.fixture.json'); mkdirSync(externalDirectory, { mode: 0o700 });
+for (const scenario of ['upgrade', 'fallback', 'installed'] as const) test('actual owning client/service ' + (scenario === 'fallback' ? 'retains trial withdrawals, private retirement, policy and unknown effect through compatible fallback' : scenario === 'installed' ? 'retains current work, authority and unknown effects through installed uninstall and reinstall' : 'retains original work and credentials through compatible package upgrade'), async () => {
+  const fallback = scenario === 'fallback', installed = scenario === 'installed', layout = s16WiringLayout(root);
+  const state = realpathSync(mkdtempSync(join(root, 'state-'))), directory = installed ? layout.state : join(state, 'installation'), configPath = installed ? layout.config : join(state, 'config.json'), externalDirectory = join(state, 'external'), authPath = join(state, 'owner.fixture.json'); mkdirSync(externalDirectory, { mode: 0o700 }); mkdirSync(dirname(configPath), { recursive: true });
   const base = s15StageConfig(directory, 'http://localhost:3099'), config = { ...base, installationId: 'fixture', files: true, computers: true, vm: { ...base.vm, id: 'vm' } }; writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
   writeFileSync(join(externalDirectory, 'external.fixture.json'), JSON.stringify({ contract: 's16-service-release-external-fixture/v1', counts: { model: 0, interpreter: 0, vm: 0, payment: 0, reconcile: 0, vmManagement: 0 }, files: {}, payment: {}, selectedManagerId: null, managers: { manager: { state: 'running', identity: 'fixture' } } }), { mode: 0o600 });
   symlinkSync(packages[0]!.path, join(prefix, 'current'));
   const initialized = await spawnRunner([bun, join(packages[0]!.path, 'src/main.ts'), 'init', '--s15', '--config', configPath], { cwd: packages[0]!.path, env, timeoutMs: 30000 }); expect(initialized.exitCode).toBe(0);
   const input = { configPath, externalDirectory, authPath, externalBackendModule: join(packages[1]!.path, 'src/s15/effects/index.ts') }; let current: Awaited<ReturnType<typeof host>> | undefined = await host(packages[0]!, { ...input, mode: 'seed' }); let job: S16ReleaseJob | undefined;
-  cleanup.push(async () => { await current?.close(); job?.close(); rmSync(state, { recursive: true, force: true }); });
+  cleanup.push(async () => { await current?.close(); job?.close(); rmSync(state, { recursive: true, force: true }); if (installed) { rmSync(layout.home, { recursive: true, force: true }); rmSync(dirname(layout.config), { recursive: true, force: true }); for (const path of [layout.files.controller, layout.files.journal, layout.files.proxy]) rmSync(path, { force: true }); } });
   const ActualClient = await import(pathToFileURL(join(packages[1]!.path, 'src/s16/client/index.ts')).href) as typeof import('../src/s16/client');
   const client: JitClient = new ActualClient.JitClient({ origin: config.origin, fetch: async request => {
     if (!current) throw Error('fixture_service_stopped'); const headers = new Headers(request.headers); headers.set('cookie', 'jit_s14=' + JSON.parse(readFileSync(authPath, 'utf8')).token); headers.set('origin', config.origin);
@@ -135,7 +138,57 @@ for (const fallback of [false, true]) test('actual owning client/service ' + (fa
     expect(readFileSync(join(directory, 'runtime/file-bytes', retained.id + '.blob'), 'utf8')).toBe('# Retained original artifact\n');
   } else { expect(Buffer.from(await client.artifactBytes(retained)).toString()).toBe('# Retained original artifact\n'); expect(Buffer.from(await client.artifactBytes(privateArtifact)).toString()).toBe('# Private original artifact\n'); }
   expect(await current!.call('duplicate_payment', payment)).toEqual({ refused: true }); await current!.call('drain'); expect((await current!.call('facts', payment)).counts).toEqual(baseline.counts);
-  if (fallback) {
+  if (installed) {
+    // The real selected service produces the later authority facts before any
+    // unit mutation; its original shared client/session remains in use.
+    await client.withdrawUpload(upload.id); await client.computerCommand({ contract: 's16-computer-command/v1', requestId: 'retire_before_uninstall', kind: 'retire_private', vmId: privateComputer.vmId }); await current!.call('policy_change');
+    trial = await current!.call('facts', payment); trialAvailability = [await availability(retained), await availability(privateArtifact)]; expect(trialAvailability).toEqual([{ state: 'withheld', status: 409 }, { state: 'withheld', status: 409 }]);
+    expect(await job.run()).toEqual(result); job.close(); job = undefined;
+    for (const path of [layout.files.controller, layout.files.journal, layout.files.proxy]) mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(layout.files.controller, `[Service]\nUser=jit-fixture\nGroup=jit-fixture\nExecStart=${bun} ${prefix}/current/src/main.ts serve --s15 --config ${configPath}\nKillMode=mixed\n\n[Install]\nWantedBy=multi-user.target\n`, { mode: 0o644 });
+    writeFileSync(layout.files.journal, '# Disposable journal fixture.\n', { mode: 0o644 }); writeFileSync(layout.files.proxy, '# Disposable proxy fixture.\n', { mode: 0o644 });
+    const originalUnits = [layout.files.controller, layout.files.journal, layout.files.proxy].map(path => readFileSync(path)), originalConfig = readFileSync(configPath); let enabled = true;
+    const originalArtifactHashes = [retained, privateArtifact].map(artifact => hash(readFileSync(join(directory, 'runtime/file-bytes', artifact.id + '.blob'))));
+    const fixedHelpers = s16ReleaseFixtureRunner(root, env);
+    const manager: CommandRunner = async (argv, settings) => {
+      const response = (stdout = '', exitCode = 0) => ({ exitCode, stdout, timedOut: false });
+      if (argv[0] === '/usr/bin/getent') return response(`jit-fixture:x:${process.getuid!()}:${process.getgid!()}::${layout.home}:/usr/sbin/nologin\n`);
+      if (argv[0] === '/usr/bin/systemctl') {
+        if (argv[1] === 'show') {
+          const loaded = existsSync(layout.files.controller), running = current?.child.exitCode === null, fields: Record<string, string> = { LoadState: loaded ? 'loaded' : 'not-found', ActiveState: running ? 'active' : 'inactive', SubState: running ? 'running' : 'dead', MainPID: running ? String(current!.child.pid) : '0', ControlPID: '0', Job: '', FragmentPath: loaded ? layout.files.controller : '', DropInPaths: '', NeedDaemonReload: 'no', User: loaded ? 'jit-fixture' : '', Group: loaded ? 'jit-fixture' : '', KillMode: 'mixed', SendSIGKILL: 'yes' };
+          return response(argv[3]!.slice('--property='.length).split(',').map(key => `${key}=${fields[key]}\n`).join(''));
+        }
+        if (argv[1] === 'is-enabled') return response(enabled ? 'enabled\n' : 'disabled\n', enabled ? 0 : 1);
+        if (argv[1] === 'stop') { await service.stop(); return response('', existsSync(layout.files.controller) ? 0 : 5); }
+        if (argv[1] === 'start') { await service.start(); return response(); }
+        if (argv[1] === 'enable') enabled = true; else if (argv[1] === 'disable') enabled = false; else if (argv[1] !== 'daemon-reload') throw Error('fixture_unexpected_manager_command'); return response();
+      }
+      if (argv[10]?.endsWith('/s16-wiring-maintenance.ts')) return spawnRunner([argv[9]!, '-e', `import{openS16WiringMaintenance}from${JSON.stringify(argv[10])};const command=await Bun.stdin.json(),cap=openS16WiringMaintenance(command.input,{layoutRoot:${JSON.stringify(root)},pathPolicy:${JSON.stringify({ root, uid: process.getuid!() })}});try{const value=cap[command.method](command.plan);cap.close();console.log(JSON.stringify(value??{state:'armed'}));}catch(error){try{cap.close();}catch{}console.log(error.message);process.exitCode=1;}`], { ...settings, env });
+      return fixedHelpers(argv, settings);
+    };
+    const ActualWiring = await import(pathToFileURL(join(packages[1]!.path, 'ops/package/installer/s16-installed-wiring.ts')).href) as typeof import('../ops/package/installer/s16-installed-wiring');
+    const wiringOptions = { run: manager, layoutRoot: root, pathPolicy: { root, uid: process.getuid!() }, user: 'jit-fixture', sleep: async () => {}, fetch: async () => { await client.bootstrap(); return new Response('', { status: 200 }); }, async stopWorkingVms() {
+      // Independent persistent VM port: no controller/state reseed and no model,
+      // payment, reconcile or transport invocation is manufactured by uninstall.
+      const external = JSON.parse(readFileSync(join(externalDirectory, 'external.fixture.json'), 'utf8')), stopped = new Set<string>();
+      for (const vm of Object.values(external.managers) as { state: string; identity: string }[]) { if (vm.state === 'running' && !stopped.has(vm.identity)) { stopped.add(vm.identity); external.counts.vmManagement++; } vm.state = 'stopped'; }
+      writeFileSync(join(externalDirectory, 'external.fixture.json'), JSON.stringify(external), { mode: 0o600 });
+    } };
+    const remove = ActualWiring.openS16InstalledWiring('remove', bun, wiringOptions); try { expect(await remove.run()).toMatchObject({ state: 'removed' }); } finally { remove.close(); }
+    expect(current).toBeUndefined(); expect([layout.files.controller, layout.files.journal, layout.files.proxy].map(path => existsSync(path))).toEqual([false, false, false]); expect(readFileSync(authPath)).toEqual(auth);
+    const afterStop = JSON.parse(readFileSync(join(externalDirectory, 'external.fixture.json'), 'utf8')).counts;
+    expect({ ...afterStop, vmManagement: baseline.counts.vmManagement }).toEqual(baseline.counts);
+    const reinstall = ActualWiring.openS16InstalledWiring('restore', bun, wiringOptions); try { expect(await reinstall.run()).toMatchObject({ state: 'restored', health: 'healthy' }); } finally { reinstall.close(); }
+    expect([layout.files.controller, layout.files.journal, layout.files.proxy].map(path => readFileSync(path))).toEqual(originalUnits); expect(readFileSync(configPath)).toEqual(originalConfig); expect(readFileSync(authPath)).toEqual(auth);
+    expect([retained, privateArtifact].map(artifact => hash(readFileSync(join(directory, 'runtime/file-bytes', artifact.id + '.blob'))))).toEqual(originalArtifactHashes);
+    const reinstated = await current!.call('facts', payment); expect(reinstated.policy).toEqual(trial.policy); expect(reinstated.usage).toEqual(trial.usage); expect(reinstated.vm).toEqual(trial.vm); expect(reinstated.assigned).toEqual([]); expect(reinstated.counts).toEqual(afterStop); expect(reinstated.slip.state).toBe('unknown'); expect(reinstated.ownerGeneration).toBe(baseline.ownerGeneration);
+    expect([await availability(retained), await availability(privateArtifact)]).toEqual(trialAvailability); expect((await client.uploadStatus(upload.id)).state).toBe('withdrawn'); expect((await client.request('retained_work')).receipt).toEqual(firstReceipt); expect((await client.request('private_work')).receipt).toEqual(privateReceipt);
+    expect(await current!.call('duplicate_payment', payment)).toEqual({ refused: true }); await current!.call('drain'); expect((await current!.call('facts', payment)).counts).toEqual(afterStop);
+    const pid = current!.child.pid, supervisor = { starts, stops }, repeated = ActualWiring.openS16InstalledWiring('restore', bun, wiringOptions);
+    try { expect((await repeated.run()).health).toBe('healthy'); } finally { repeated.close(); }
+    expect(current!.child.pid).toBe(pid); expect({ starts, stops }).toEqual(supervisor); expect((await current!.call('facts', payment)).counts).toEqual(afterStop);
+  }
+  if (fallback || installed) {
     await current!.call('assign_private', { id: 'private_vm_2' });
     const freshBytes = Buffer.from('Fresh current-policy input.\n'), freshPending = await client.createUpload({ requestId: 'fresh_input', conversationId: 'after_fallback', name: 'fresh.txt', bytes: freshBytes.length, sha256: hash(freshBytes) }), fresh = await client.uploadBytes(freshPending.id, freshBytes);
     await current!.call('script', [{ type: 'tool_call', id: 'read_fresh', name: 'file_read', arguments: { id: fresh.id, offset: 0 } }, { type: 'tool_call', id: 'create_fresh', name: 'file_create', arguments: { name: 'fresh.md', text: '# Fresh current-policy output\n' } }]);
@@ -143,7 +196,7 @@ for (const fallback of [false, true]) test('actual owning client/service ' + (fa
     const freshView = await client.request('fresh_work'); expect(freshView.row.state).toBe('done'); expect(Buffer.from(await client.artifactBytes(freshView.row.files!.artifacts[0]!)).toString()).toBe('# Fresh current-policy output\n');
     const after = await current!.call('facts', payment); expect(after.counts.payment).toBe(1); expect(after.counts.model).toBeGreaterThan(baseline.counts.model); expect(after.vm).toEqual(trial.vm); expect(after.slip.state).toBe('unknown'); expect(after.policy).toEqual(trial.policy);
   }
-  const pid = current!.child.pid, supervisor = { starts, stops }; expect(await job.run()).toEqual(result); expect({ starts, stops }).toEqual(supervisor); expect(current!.child.pid).toBe(pid);
+  if (job) { const pid = current!.child.pid, supervisor = { starts, stops }; expect(await job.run()).toEqual(result); expect({ starts, stops }).toEqual(supervisor); expect(current!.child.pid).toBe(pid); }
   expect(existsSync(join(directory, 'owner/owner.sqlite.ops/fence.json'))).toBe(false);
-  const after = await current!.call('facts', payment); observations.push({ outcome: result.outcome, ownerGeneration: after.ownerGeneration, policyRevision: after.policy.revision, originalPaymentCalls: baseline.counts.payment, currentPaymentCalls: after.counts.payment, originalCounters: baseline.counts, trialWithheld: fallback, freshWork: fallback });
-}, 240000);
+  const after = await current!.call('facts', payment); observations.push({ outcome: installed ? 'installed_reinstalled' : result.outcome, ownerGeneration: after.ownerGeneration, policyRevision: after.policy.revision, originalPaymentCalls: baseline.counts.payment, currentPaymentCalls: after.counts.payment, originalCounters: baseline.counts, trialWithheld: fallback || installed, freshWork: fallback || installed });
+}, 360000);
