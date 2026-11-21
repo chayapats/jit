@@ -9,6 +9,7 @@ import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from '
 import type { S16LedgerSource } from '../../s16/operations/ledger-set';
 import { verifyS16PayloadSources, type S16PayloadSource } from '../../s16/operations/payload-set';
 import { assertS16LedgerWriteCutFor, type S16LedgerWriteCut } from '../../s16/operations/ledger-write-cut';
+import { s16ByteCustodyIdentities, type S16ByteCustodyIdentity } from '../../s16/operations/byte-custody-identity';
 
 type Correlation = Readonly<{ table: 'records' | 'receipts' | 'disclosure'; kind: string; rowId: string; slot: string; state: string | null }>;
 /** Current hash-addressed byte custody only; references never grant publication, recipient or effect authority. */
@@ -25,13 +26,23 @@ export interface S16GithubArtifactObservation {
   readonly value: Readonly<S16GithubArtifactCohort>; readonly sha256: string; readonly sources: readonly Readonly<S16PayloadSource>[];
   assertCurrent(): void;
 }
+/** Present verified current bundles plus absent current pins; missing lengths remain unknown. */
+export interface S16CurrentGithubCustody extends Omit<S16GithubArtifactCohort, 'contract'> {
+  contract: 's16-current-github-custody/v1';
+  missing: readonly Readonly<{ id: string; sha256: string; references: readonly Correlation[] }>[];
+}
+/** Original damaged-current observation, with separate host-only physical identities. */
+export interface S16CurrentGithubObservation {
+  readonly value: Readonly<S16CurrentGithubCustody>; readonly sha256: string; readonly sources: readonly Readonly<S16PayloadSource>[];
+  readonly entries: readonly S16ByteCustodyIdentity[]; assertCurrent(): void;
+}
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 const same = (a: BigIntStats, b: BigIntStats) => ['dev', 'ino', 'uid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key as keyof BigIntStats] === b[key as keyof BigIntStats]);
 const kinds = new Set(['connection', 'connection_history', 'report', 'issue', 'selection', 'work_evidence', 'action', 'action_family', 'remote_result', 'capture', 'babysit']);
 function refuse(code = 's16_ops_github_custody_invalid'): never { throw new AppError(code, 409); }
 function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) return refuse(); return value as Record<string, unknown>; }
 function freeze<T>(value: T): T { if (value && typeof value === 'object') { for (const item of Object.values(value)) freeze(item); Object.freeze(value); } return value; }
-function encode(value: S16GithubArtifactCohort | S16GithubCurrentReferences): string { const text = JSON.stringify(value); if (Buffer.byteLength(text) > 4194304) refuse('s16_ops_github_bounds'); return text; }
+function encode(value: S16GithubArtifactCohort | S16GithubCurrentReferences | S16CurrentGithubCustody): string { const text = JSON.stringify(value); if (Buffer.byteLength(text) > 4194304) refuse('s16_ops_github_bounds'); return text; }
 
 type Entry = (path: string, dir?: boolean, optional?: boolean) => BigIntStats | null;
 /** Both complete custody and missing-byte recovery use the same bounded current owning SQL parser. */
@@ -113,9 +124,18 @@ function currentReferenceRows(options: S16GithubArtifactOptions, entry: Entry): 
  * Git decoding, credentials, gateway calls or mutation settlement. Unreferenced bytes stay unreferenced.
  */
 export function captureS16GithubArtifacts(options: S16GithubArtifactOptions): S16GithubArtifactObservation {
+  return captureGithubCustody(options, false) as S16GithubArtifactObservation;
+}
+/** Observes every present current bundle and exact missing reference without recovery or initialization. */
+export function captureS16CurrentGithubCustody(options: S16GithubArtifactOptions): S16CurrentGithubObservation {
+  return captureGithubCustody(options, true) as S16CurrentGithubObservation;
+}
+function captureGithubCustody(options: S16GithubArtifactOptions, allowMissing: boolean): S16GithubArtifactObservation | S16CurrentGithubObservation {
   const { directory, installationId, lease, source, disclosure } = options; identity(installationId);
   if (!isAbsolute(directory) || normalize(directory) !== directory) refuse();
-  const guard = () => { assertS16ExclusiveInstallationLease(lease, directory); if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid'); }; guard();
+  const guard = () => { assertS16ExclusiveInstallationLease(lease, directory); if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid');
+    if (allowMissing) { if (options.cut) assertS16LedgerWriteCutFor(options.cut, [source, disclosure].filter((row): row is S16LedgerSource => row !== undefined), { subset: true }); else if (source?.database.inTransaction || disclosure?.database.inTransaction) refuse('s16_ops_sources_busy'); }
+  }; guard();
   const collect = () => {
     guard(); const entries = new Map<string, BigIntStats | null>();
     const entry = (path: string, dir = false, optional = false) => {
@@ -124,21 +144,25 @@ export function captureS16GithubArtifacts(options: S16GithubArtifactOptions): S1
       if (process.getuid?.() === undefined || s.uid !== BigInt(process.getuid!()) || s.isSymbolicLink() || (dir ? !s.isDirectory() : !s.isFile() || s.nlink !== 1n) || s.mode & (dir ? 0o7077n : 0o7177n)) return refuse();
       entries.set(path, s); return s;
     };
-    const references = currentReferenceRows(options, entry), root = join(directory, 'github-artifacts'), namespace = entry(root, true, !source);
+    const references = currentReferenceRows(options, entry), root = join(directory, 'github-artifacts'), namespace = entry(root, true, allowMissing || !source);
     const names: string[] = [];
     if (namespace) { const dir = opendirSync(root); try { for (;;) { const next = dir.readSync(); if (!next) break; if (names.length >= 20000 || !/^bundle_[a-f0-9]{64}$/.test(next.name)) refuse('s16_ops_github_bounds'); names.push(next.name); } } finally { dir.closeSync(); } }
-    if (!source && names.length) refuse(); names.sort(); const present = new Set(names); if ([...references.keys()].some(id => !present.has(id))) refuse('s16_ops_github_missing');
+    if (!source && names.length) refuse(); names.sort(); const present = new Set(names);
+    const missing = [...references].filter(([id]) => !present.has(id)).sort(([a], [b]) => a.localeCompare(b)).map(([id, references]) => ({ id, sha256: id.slice(7), references }));
+    if (missing.length && !allowMissing) refuse('s16_ops_github_missing');
+    for (const row of missing) if (entry(join(root, row.id), false, true)) refuse('s16_ops_github_changed');
     let total = 0; const sources: S16PayloadSource[] = [], bundles: S16GithubArtifactCohort['bundles'][number][] = [];
     for (const id of names) {
       const path = join(root, id), stat = entry(path)!; if (stat.size > 1073741824n || (total += Number(stat.size)) > 4294967296) refuse('s16_ops_github_bounds');
       const sha256 = id.slice(7), bytes = Number(stat.size); sources.push(Object.freeze({ name: 'github_' + id + '.bundle', path, bytes, sha256 })); bundles.push(freeze({ id, bytes, sha256, references: references.get(id) ?? [] }));
     }
-    const value: S16GithubArtifactCohort = { contract: 's16-github-artifact-cohort/v1', installationId, present: source !== undefined, namespace: namespace !== null, lineage: disclosure !== undefined, bundles }; encode(value);
+    const base: S16GithubArtifactCohort = { contract: 's16-github-artifact-cohort/v1', installationId, present: source !== undefined, namespace: namespace !== null, lineage: disclosure !== undefined, bundles };
+    const value = allowMissing ? { ...base, contract: 's16-current-github-custody/v1' as const, missing } : base; encode(value);
     const check = () => { guard(); for (const [path, before] of entries) { const after = lstatSync(path, { bigint: true, throwIfNoEntry: false }); if (before ? !after || !same(before, after) : after) refuse('s16_ops_github_changed'); } guard(); }; check(); verifyS16PayloadSources(sources, guard); check();
-    return { value: freeze(value), sources: Object.freeze(sources), check };
+    return { value: freeze(value), sources: Object.freeze(sources), entries: allowMissing ? s16ByteCustodyIdentities(entries) : undefined, check };
   };
   const original = collect(), sha256 = sha(encode(original.value));
-  return Object.freeze({ value: original.value, sources: original.sources, sha256, assertCurrent() { original.check(); const latest = collect(); if (sha(encode(latest.value)) !== sha256) refuse('s16_ops_github_changed'); original.check(); } });
+  return Object.freeze({ value: original.value, sources: original.sources, sha256, ...(allowMissing ? { entries: original.entries! } : {}), assertCurrent() { original.check(); const latest = collect(); if (sha(encode(latest.value)) !== sha256) refuse('s16_ops_github_changed'); original.check(); } }) as S16GithubArtifactObservation | S16CurrentGithubObservation;
 }
 
 /** Current SQL correlations only; no namespace, byte availability, publication or execution permission is asserted. */

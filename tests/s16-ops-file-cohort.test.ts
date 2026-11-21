@@ -8,6 +8,7 @@ import { readS15RuntimeConfig } from '../src/s15/runtime-config';
 import { FileStore } from '../src/s16/files/store';
 import { openS16ControlMaintenance, type S16ControlMaintenance } from '../src/s16/operations/control-maintenance';
 import { captureS16PayloadSet, s16PayloadSetManifestHash, verifyS16PayloadSet } from '../src/s16/operations/payload-set';
+import { binaryRuntime, launchPdf } from './fixtures/s16-binary';
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -126,5 +127,64 @@ test.each(['unknown', 'symlink', 'hardlink', 'mode', 'size', 'missing', 'parser-
   if (kind === 'parser-name') writeFileSync(join(job, 'out/unknown'), 'unowned', { mode: 0o600 });
   if (kind === 'parser-size') truncateSync(join(job, 'out/text.txt'), 2097153);
   if (kind === 'parser-missing') renameSync(f.parser, f.parser + '.retained');
-  const ctx = f.context(); expect(() => ctx.fileCustody()).toThrow(); expect(existsSync(job) || existsSync(f.parser + '.retained')).toBe(true);
+  const ctx = f.context(); expect(() => ctx.fileCustody()).toThrow(); expect(() => ctx.currentFileCustody()).toThrow(); expect(existsSync(job) || existsSync(f.parser + '.retained')).toBe(true);
+});
+
+test('damaged current FILE custody records exact absent pins and original identities without creating bytes or changing current SQL', async () => {
+  const f = await fixture(), id = await ready(f), ctx = f.context(), before = ctx.sources.map(row => row.database.serialize());
+  renameSync(f.data, f.data + '.retained'); const cut = ctx.currentFileCustody();
+  expect(cut.value.contract).toBe('s16-current-file-custody/v1'); expect(cut.value.files).toEqual([]); expect(cut.sources).toEqual([]);
+  expect(cut.value.missing).toEqual([{ name: id + '.blob', rowId: id, role: 'original', bytes: 22, sha256: hash('current private input\n') }]);
+  expect(cut.entries).toContainEqual({ path: f.data, kind: 'absent', sha256: null });
+  expect(cut.entries).toContainEqual({ path: join(f.data, id + '.blob'), kind: 'absent', sha256: null });
+  expect(Object.isFrozen(cut.entries[0])).toBe(true); expect(Object.isFrozen(cut.value.missing[0])).toBe(true); expect(JSON.stringify(cut.value)).not.toContain(f.directory);
+  cut.assertCurrent(); expect(existsSync(f.data)).toBe(false); expect(() => ctx.fileCustody()).toThrow(); expect(ctx.sources.map(row => row.database.serialize())).toEqual(before);
+  ctx.close(); expect(() => cut.assertCurrent()).toThrow();
+});
+
+test('damaged FILE custody preserves withdrawn leftovers and actual interrupted pending bytes while missing artifact metadata stays inert', async () => {
+  const f = await fixture(), id = await ready(f), original = readFileSync(join(f.data, id + '.blob'));
+  const store = new FileStore({ path: join(f.directory, 'runtime/files.sqlite'), directory: f.data, installationId: f.config.installationId, create: false, resource: { id: 'computer', revision: 1, generation: 1 }, requireOwner: () => ({ id: f.ownerId, generation: 1 }) });
+  let artifact = '';
+  try { artifact = store.stageArtifact({} as never, { id: 'missing_staged', requestId: 'never_published', workId: 'work', conversationId: 'conversation', name: 'draft.md', text: 'Inert current artifact\n', inputs: [{ id, sha256: hash(original) }] }).id; store.withdraw({} as never, id); } finally { await store.close(); }
+  writeFileSync(join(f.data, id + '.blob'), original, { mode: 0o600 }); unlinkSync(join(f.data, artifact + '.blob'));
+  const pending = await interrupt(f, 'uploading'), ctx = f.context(), before = ctx.sources.map(row => row.database.serialize()), cut = ctx.currentFileCustody();
+  expect(cut.value.files.find(row => row.rowId === id)).toMatchObject({ state: 'withdrawn', role: 'unpublished_original', trust: 'untrusted' });
+  expect(cut.value.files.find(row => row.rowId === pending)).toMatchObject({ state: 'uploading', role: 'upload_fragment', trust: 'untrusted', bytes: 4 });
+  expect(cut.value.pending).toEqual([{ id: pending, state: 'uploading' }]); expect(cut.value.missing.map(row => [row.rowId, row.role])).toEqual([[artifact, 'artifact']]);
+  cut.assertCurrent(); expect(ctx.sources.map(row => row.database.serialize())).toEqual(before); expect(readFileSync(join(f.data, id + '.blob'))).toEqual(original); expect(() => ctx.fileCustody()).toThrow();
+});
+
+test('actual parser ready representation can be missing while its current original remains pinned and parser continuity stays mandatory', async () => {
+  const f = await fixture('binary'), store = new FileStore({ path: join(f.directory, 'runtime/files.sqlite'), directory: f.data, installationId: f.config.installationId, create: false, resource: { id: 'computer', revision: 1, generation: 1 }, parserRuntime: binaryRuntime(), requireOwner: () => ({ id: f.ownerId, generation: 1 }) });
+  let id = '';
+  try { const bytes = launchPdf(), upload = store.create({} as never, { requestId: 'ready_pdf', conversationId: 'conversation', name: 'notes.pdf', bytes: bytes.length, sha256: hash(bytes) }); const result = await store.write({} as never, upload.id, new Blob([new Uint8Array(bytes)]).stream()); expect(result.state).toBe('ready'); id = result.id; } finally { await store.close(); }
+  const derived = join(f.data, id + '.blob.derived'); unlinkSync(derived); const ctx = f.context(), cut = ctx.currentFileCustody();
+  expect(cut.value.files.map(row => row.role)).toEqual(['original']); expect(cut.value.missing.map(row => [row.name, row.role])).toEqual([[id + '.blob.derived', 'representation']]); cut.assertCurrent();
+  expect(() => ctx.fileCustody()).toThrow(); renameSync(f.parser, f.parser + '.retained'); expect(() => ctx.currentFileCustody()).toThrow('s16_ops_file_parser_missing'); expect(existsSync(f.parser)).toBe(false);
+});
+
+test.each(['replacement', 'repair', 'extra', 'metadata'] as const)('original current FILE custody refuses %s rather than accepting a changed preparation', async kind => {
+  const f = await fixture(), id = await ready(f), path = join(f.data, id + '.blob'), bytes = readFileSync(path);
+  if (kind === 'repair') unlinkSync(path); const ctx = f.context(), cut = ctx.currentFileCustody();
+  if (kind === 'replacement') { renameSync(path, path + '.old'); writeFileSync(path, bytes, { mode: 0o600 }); unlinkSync(path + '.old'); }
+  if (kind === 'repair') writeFileSync(path, bytes, { mode: 0o600 });
+  if (kind === 'extra') writeFileSync(join(f.data, 'unknown.part'), '', { mode: 0o600 });
+  if (kind === 'metadata') db(ctx).exec("UPDATE records SET json=json_set(json,'$.state','withdrawn') WHERE json_extract(json,'$.kind')='upload'");
+  expect(() => cut.assertCurrent()).toThrow();
+});
+
+test('selected current FILE SQL cannot disappear into an empty damaged-byte observation', async () => {
+  const f = await fixture(), id = await ready(f), path = join(f.directory, 'runtime/files.sqlite'); renameSync(path, path + '.retained');
+  expect(() => f.context()).toThrow('s16_ops_continuity_unavailable');
+  expect(existsSync(path)).toBe(false); expect(readFileSync(join(f.data, id + '.blob'), 'utf8')).toBe('current private input\n');
+});
+
+test('current FILE custody rereads WAL-only metadata and refuses a transaction without its actual writer cut', async () => {
+  const f = await fixture(), id = await ready(f), path = join(f.directory, 'runtime/files.sqlite'), setup = new Database(path, { readwrite: true, create: false });
+  try { setup.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0'); } finally { setup.close(true); }
+  const ctx = f.context(), source = db(ctx), cut = ctx.currentFileCustody(), before = readFileSync(source.filename);
+  source.exec("UPDATE records SET json=json_set(json,'$.name','renamed.txt') WHERE id='" + id + "'");
+  expect(readFileSync(source.filename)).toEqual(before); expect(() => cut.assertCurrent()).toThrow('s16_ops_file_changed');
+  source.exec('BEGIN'); try { expect(() => ctx.currentFileCustody()).toThrow('s16_ops_sources_busy'); } finally { source.exec('ROLLBACK'); }
 });

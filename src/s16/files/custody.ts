@@ -8,7 +8,9 @@ import { identity } from '../../s15/conversation/validation';
 import type { S16LedgerSource } from '../operations/ledger-set';
 import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from '../operations/installation-lease';
 import type { S16PayloadSource } from '../operations/payload-set';
-import { fileCustodyPayloads } from './maintenance';
+import { fileExpectedPayloads, type FileExpectedPayloads } from './maintenance';
+import { assertS16LedgerWriteCutFor, type S16LedgerWriteCut } from '../operations/ledger-write-cut';
+import { s16ByteCustodyIdentities, type S16ByteCustodyIdentity } from '../operations/byte-custody-identity';
 import type { FileUpload } from './types';
 
 type Role = 'original' | 'representation' | 'artifact' | 'upload_fragment' | 'unpublished_original' | 'unpublished_representation' | 'parser_input' | 'parser_output';
@@ -24,6 +26,17 @@ export interface S16FileCohortOptions {
   directory: string; installationId: string; lease: S16InstallationLease; source: S16LedgerSource | undefined;
   configuredGeneration: string | null; guard(): void;
 }
+/** All present current custody and exact absent immutable pins, without repairing either. */
+export interface S16CurrentFileCustody extends Omit<S16FileCohort, 'contract'> {
+  contract: 's16-current-file-custody/v1'; missing: FileExpectedPayloads['files'];
+}
+/** Protected current composition may authenticate a genuine covering SQL writer cut. */
+export interface S16CurrentFileCustodyOptions extends S16FileCohortOptions { cut?: S16LedgerWriteCut }
+/** Host-only original damaged-current observation; physical entries are not target ownership. */
+export interface S16CurrentFileObservation {
+  readonly value: Readonly<S16CurrentFileCustody>; readonly sha256: string; readonly sources: readonly Readonly<S16PayloadSource>[];
+  readonly entries: readonly S16ByteCustodyIdentity[]; assertCurrent(): void;
+}
 /** Original immutable current cut and host-only payload sources; archive metadata cannot construct the live guard. */
 export interface S16FileObservation {
   readonly value: Readonly<S16FileCohort>; readonly sha256: string; readonly sources: readonly Readonly<S16PayloadSource>[];
@@ -33,17 +46,26 @@ const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 function refuse(code = 's16_ops_file_custody_invalid'): never { throw new AppError(code, 409); }
 const equal = (a: BigIntStats, b: BigIntStats) => ['dev', 'ino', 'uid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key as keyof BigIntStats] === b[key as keyof BigIntStats]);
 function freeze<T>(value: T): T { if (value && typeof value === 'object') { for (const item of Object.values(value)) freeze(item); Object.freeze(value); } return value; }
-function encode(value: S16FileCohort): string { const text = JSON.stringify(value); if (Buffer.byteLength(text) > 4194304) refuse('s16_ops_file_bounds'); return text; }
+function encode(value: S16FileCohort | S16CurrentFileCustody): string { const text = JSON.stringify(value); if (Buffer.byteLength(text) > 4194304) refuse('s16_ops_file_bounds'); return text; }
 /**
  * Observes complete known FILE/parser byte custody without constructors, replay, decoding or cleanup.
  * Original receipt-pinned files and untrusted leftovers keep distinct roles. All original attributes,
  * absences and complete byte identities must remain unchanged when the live cut is revalidated.
  */
 export function captureS16FileCohort(options: S16FileCohortOptions): S16FileObservation {
+  return captureFileCustody(options, false) as S16FileObservation;
+}
+/** Observes all present FILE/parser custody and missing current immutable pins; never initializes or writes. */
+export function captureS16CurrentFileCustody(options: S16CurrentFileCustodyOptions): S16CurrentFileObservation {
+  return captureFileCustody(options, true) as S16CurrentFileObservation;
+}
+function captureFileCustody(options: S16CurrentFileCustodyOptions, allowMissing: boolean): S16FileObservation | S16CurrentFileObservation {
   const { directory, installationId, lease, source, configuredGeneration } = options;
   identity(installationId);
   if (!isAbsolute(directory) || normalize(directory) !== directory || configuredGeneration !== null && !pinnedImagePattern.test(configuredGeneration)) refuse();
-  const guard = () => { assertS16ExclusiveInstallationLease(lease, directory); if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid'); }; guard();
+  const guard = () => { assertS16ExclusiveInstallationLease(lease, directory); if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid');
+    if (allowMissing) { if (options.cut) assertS16LedgerWriteCutFor(options.cut, source ? [source] : [], { subset: true }); else if (source?.database.inTransaction) refuse('s16_ops_sources_busy'); }
+  }; guard();
   const collect = () => {
     guard(); const entries = new Map<string, BigIntStats | null>(), files: S16FileCohort['files'][number][] = [], sources: S16PayloadSource[] = [], jobs: string[] = [];
     let total = 0; const sourceNames = new Set<string>();
@@ -76,14 +98,16 @@ export function captureS16FileCohort(options: S16FileCohortOptions): S16FileObse
       sources.push(Object.freeze({ name, path, ...observed })); files.push(freeze({ name, role, trust: expected ? 'owning_pinned' as const : 'untrusted' as const, rowId, jobId, state, ...observed })); return observed;
     };
     const runtime = join(directory, 'runtime'), data = join(runtime, 'file-bytes'), parser = join(runtime, 'file-parser');
-    const dataEntry = entry(data, true, !source), parserEntry = entry(parser, true, true);
+    const dataEntry = entry(data, true, allowMissing || !source), parserEntry = entry(parser, true, true);
     if (source && (source.name !== 'files.sqlite' || source.database.filename !== join(runtime, 'files.sqlite') || source.reader.applicationId !== 0x4a495446) || !source && (dataEntry || parserEntry || configuredGeneration !== null)) refuse();
-    let pending: S16FileCohort['pending'] = [], requiresParser = configuredGeneration !== null;
+    let pending: S16FileCohort['pending'] = [], requiresParser = configuredGeneration !== null, recordsSha256: string | null = null;
+    let missing: FileExpectedPayloads['files'] = [];
     if (source) {
-      const listed = names(data, 20000), immutable = fileCustodyPayloads(source.database, data, installationId, guard), pinned = new Map(immutable.sources.map(row => [row.name, row]));
+      const listed = dataEntry ? names(data, 20000) : [], immutable = fileExpectedPayloads(source.database, installationId, guard), pinned = new Map(immutable.files.map(row => [row.name, row]));
       const listedNames = new Set(listed);
       pending = immutable.pending;
       const rows = source.database.query<{ id: string; json: string }, []>('SELECT id,json FROM records ORDER BY id LIMIT 10001').all();
+      recordsSha256 = sha(JSON.stringify(rows));
       const owned = new Map<string, { row: Record<string, unknown>; suffix: string }>();
       for (const { id, json } of rows) {
         const row = JSON.parse(json) as Record<string, unknown>; identity(id);
@@ -102,7 +126,9 @@ export function captureS16FileCohort(options: S16FileCohortOptions): S16FileObse
         const observed = add(join(data, name), 'data/' + name, role, id, null, state, 1048576, expected);
         if (!expected && row.kind === 'upload' && ['uploading', 'validating'].includes(state) && suffix !== '.blob.derived' && (observed.bytes > Number(row.expectedBytes) || (state === 'validating' || suffix === '.blob') && (observed.bytes !== row.expectedBytes || observed.sha256 !== row.expectedHash))) refuse('s16_ops_file_integrity_failed');
       }
-      if (immutable.sources.some(row => !listedNames.has(row.name))) refuse('s16_ops_file_missing_original');
+      missing = immutable.files.filter(row => !listedNames.has(row.name));
+      for (const row of missing) if (entry(join(data, row.name), false, true)) refuse('s16_ops_file_changed');
+      if (missing.length && !allowMissing) refuse('s16_ops_file_missing_original');
     }
     if (requiresParser && !parserEntry) refuse('s16_ops_file_parser_missing');
     if (parserEntry) for (const job of names(parser, 64)) {
@@ -116,9 +142,10 @@ export function captureS16FileCohort(options: S16FileCohortOptions): S16FileObse
       }
     }
     const check = () => { guard(); for (const [path, before] of entries) { const after = lstatSync(path, { bigint: true, throwIfNoEntry: false }); if (before ? !after || !equal(before, after) : after) refuse('s16_ops_file_changed'); } guard(); }; check();
-    const value: S16FileCohort = { contract: 's16-file-cohort/v1', installationId, present: source !== undefined, files, pending, parser: { present: parserEntry !== null, configuredGeneration, container: { name: 'jit-sanitize-' + sha(directory + '/s16-files').slice(0, 32), originalJobId: null, generation: null, settlement: 'unobserved' }, jobs } };
-    encode(value); return { value: freeze(value), sources: Object.freeze(sources), check };
+    const base: S16FileCohort = { contract: 's16-file-cohort/v1', installationId, present: source !== undefined, files, pending, parser: { present: parserEntry !== null, configuredGeneration, container: { name: 'jit-sanitize-' + sha(directory + '/s16-files').slice(0, 32), originalJobId: null, generation: null, settlement: 'unobserved' }, jobs } };
+    const value = allowMissing ? { ...base, contract: 's16-current-file-custody/v1' as const, missing } : base;
+    encode(value); return { value: freeze(value), sources: Object.freeze(sources), entries: allowMissing ? s16ByteCustodyIdentities(entries) : undefined, recordsSha256, check };
   };
   const original = collect(), sha256 = sha(encode(original.value));
-  return Object.freeze({ value: original.value, sources: original.sources, sha256, assertCurrent() { original.check(); const latest = collect(); if (sha(encode(latest.value)) !== sha256) refuse('s16_ops_file_changed'); original.check(); } });
+  return Object.freeze({ value: original.value, sources: original.sources, sha256, ...(allowMissing ? { entries: original.entries! } : {}), assertCurrent() { original.check(); const latest = collect(); if (sha(encode(latest.value)) !== sha256 || latest.recordsSha256 !== original.recordsSha256) refuse('s16_ops_file_changed'); original.check(); } }) as S16FileObservation | S16CurrentFileObservation;
 }

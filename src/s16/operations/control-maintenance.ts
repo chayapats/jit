@@ -19,8 +19,8 @@ import { openS16NativeSet, type S16NativeSetMaintenance, type S16NativeSetOption
 import { openFirecrackerControllerMaintenance, type FirecrackerControllerMaintenance } from '../../s15/vm/firecracker/maintenance';
 import { ConnectionVault } from '../../exec/connections';
 import { captureS16HelperCohort, type S16HelperObservation, type S16HelperCohortOptions } from './helper-cohort';
-import { captureS16FileCohort, type S16FileObservation } from '../files/custody';
-import { captureS16GithubArtifacts, type S16GithubArtifactObservation } from '../../s15/github/maintenance';
+import { captureS16FileCohort, captureS16CurrentFileCustody, type S16FileObservation, type S16CurrentFileObservation } from '../files/custody';
+import { captureS16GithubArtifacts, captureS16CurrentGithubCustody, type S16GithubArtifactObservation, type S16CurrentGithubObservation } from '../../s15/github/maintenance';
 import { removeS16Point, type S16PointRemovalOptions, type S16PointRemovalResult } from './point-retention';
 import { captureS16ExternalCustody, type S16ExternalObservation } from './external-custody';
 import { s16PointDirectory } from './point-files';
@@ -32,6 +32,7 @@ import { captureS16CurrentPayloadReferences, type S16CurrentPayloadReferenceObse
 import { assertS16LedgerWriteCutFor, openS16LedgerWriteCut, type S16LedgerWriteCut } from './ledger-write-cut';
 import { ownS16RecoveryStage, type S16RecoveryStage, type S16RecoveryStageOptions } from './recovery-staging';
 import { openS16CandidateQuarantine, type S16CandidateMaintenance, type S16CandidateOptions } from './candidate-quarantine';
+import { assertS16SelectedStores } from './selected-stores';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -76,6 +77,10 @@ export interface S16ControlMaintenance {
   helperCustody(options?: S16HelperCohortOptions): Promise<S16HelperObservation>;
   /** Complete known FILE/parser byte custody, retaining pending and untrusted roles without boot recovery. */
   fileCustody(): S16FileObservation;
+  /** Present FILE/parser bytes and exact missing current pins; neither a complete point nor write authority. */
+  currentFileCustody(cut?: S16LedgerWriteCut): S16CurrentFileObservation;
+  /** Present GitHub bytes and exact missing current refs, preserving unreferenced current custody. */
+  currentGithubCustody(cut?: S16LedgerWriteCut): S16CurrentGithubObservation;
   /** Current SQL pins even when payload bytes are missing; no complete cohort or restore authority. */
   currentPayloadReferences(cut?: S16LedgerWriteCut): S16CurrentPayloadReferenceObservation;
   /** Actual writer reservations for the complete current SQL set; no actor or activation authority. */
@@ -275,6 +280,18 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const githubArtifacts = () => captureS16GithubArtifacts({ directory: root, installationId: config.installationId, lease, source: heldRuntime.sources.find(source => source.name === 'github.sqlite'), disclosure: heldRuntime.sources.find(source => source.name === 'disclosure.sqlite'), guard: assertCurrent });
     const fileCustody = () => captureS16FileCohort({ directory: root, installationId: config.installationId, lease,
       source: heldRuntime.sources.find(source => source.name === 'files.sqlite'), configuredGeneration: typeof config.files === 'object' ? config.files.parserImage : null, guard: assertCurrent });
+    const currentFileCustody = (cut?: S16LedgerWriteCut) => {
+      assertCurrent(); assertS16SelectedStores(config, heldRuntime.sources);
+      if (cut) assertS16LedgerWriteCutFor(cut, sources);
+      return captureS16CurrentFileCustody({ directory: root, installationId: config.installationId, lease,
+        source: heldRuntime.sources.find(source => source.name === 'files.sqlite'), configuredGeneration: typeof config.files === 'object' ? config.files.parserImage : null, guard: assertCurrent, ...(cut ? { cut } : {}) });
+    };
+    const currentGithubCustody = (cut?: S16LedgerWriteCut) => {
+      assertCurrent(); assertS16SelectedStores(config, heldRuntime.sources);
+      if (cut) assertS16LedgerWriteCutFor(cut, sources);
+      return captureS16CurrentGithubCustody({ directory: root, installationId: config.installationId, lease,
+        source: heldRuntime.sources.find(source => source.name === 'github.sqlite'), disclosure: heldRuntime.sources.find(source => source.name === 'disclosure.sqlite'), guard: assertCurrent, ...(cut ? { cut } : {}) });
+    };
     const currentPayloadReferences = (cut?: S16LedgerWriteCut) => {
       if (cut) assertS16LedgerWriteCutFor(cut, sources);
       return captureS16CurrentPayloadReferences({ directory: root, installationId: config.installationId, lease, sources: heldRuntime.sources, guard: assertCurrent, ...(cut ? { cut } : {}) });
@@ -304,7 +321,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     };
     const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
     const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, currentLedgerCut, recoveryStage, candidateQuarantine, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentFileCustody, currentGithubCustody, currentPayloadReferences, currentLedgerCut, recoveryStage, candidateQuarantine, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

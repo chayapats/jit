@@ -83,6 +83,7 @@ test.each(['missing', 'hash', 'symlink', 'hardlink', 'mode', 'name', 'size', 'id
   if (kind === 'row-bounds') f.db.query("UPDATE records SET json=? WHERE kind='report'").run(JSON.stringify({ content: 'x'.repeat(1048576) }));
   if (kind === 'utf8') f.db.query("UPDATE records SET json=CAST(? AS TEXT) WHERE kind='report'").run(Buffer.concat([Buffer.from('{"content":"'), Buffer.from([255]), Buffer.from('"}')]));
   expect(() => f.context.githubArtifacts()).toThrow(); expect(JSON.parse(f.db.query<{ json: string }, []>("SELECT json FROM records WHERE kind='babysit'").get()!.json).state).toBe('remediating');
+  if (kind !== 'missing') expect(() => f.context.currentGithubCustody()).toThrow();
   if (['identity', 'reader', 'kind', 'slot', 'row-bounds', 'utf8'].includes(kind)) expect(() => f.context.currentPayloadReferences()).toThrow();
 });
 
@@ -158,6 +159,30 @@ test('current DATA15 alone keeps its original pre-publication bundle pin when by
   expect(before.value.github.bundles[0]!.references[0]!.slot).toBe('disclosure.derived.ref');
   unlinkSync(join(f.root, f.bundles[0]!.ref.id)); before.assertCurrent(); expect(f.context.currentPayloadReferences().value).toEqual(before.value);
   expect(() => f.context.githubArtifacts()).toThrow('s16_ops_github_missing');
+  const custody = f.context.currentGithubCustody(); expect(custody.value.missing[0]!.references).toEqual(before.value.github.bundles[0]!.references); custody.assertCurrent();
+});
+
+test.each(['member', 'namespace'] as const)('current GitHub custody retains all present bytes and exact missing %s pins without inventing lengths or settling unknown effects', async kind => {
+  const f = await fixture(true), before = f.context.sources.map(row => row.database.serialize()), missingId = f.bundles[0]!.ref.id;
+  if (kind === 'member') unlinkSync(join(f.root, missingId)); else renameSync(f.root, f.root + '.retained');
+  const cut = f.context.currentGithubCustody(); expect(cut.value.contract).toBe('s16-current-github-custody/v1');
+  expect(cut.value.missing.map(row => row.id)).toEqual(f.context.currentPayloadReferences().value.github.bundles.filter(row => kind === 'namespace' || row.id === missingId).map(row => row.id));
+  expect(cut.value.missing.every(row => !Object.hasOwn(row, 'bytes'))).toBe(true); expect(cut.value.bundles).toHaveLength(kind === 'member' ? 2 : 0);
+  if (kind === 'member') expect(cut.value.bundles.find(row => row.id === f.bundles[2]!.ref.id)!.references).toEqual([]);
+  expect(cut.entries).toContainEqual({ path: join(f.root, missingId), kind: 'absent', sha256: null }); expect(JSON.stringify(cut.value)).not.toContain(f.directory); expect(Object.isFrozen(cut.value.missing[0]!.references)).toBe(true);
+  cut.assertCurrent(); expect(f.context.sources.map(row => row.database.serialize())).toEqual(before); expect(() => f.context.githubArtifacts()).toThrow();
+  expect(JSON.parse(f.db.query<{ json: string }, []>("SELECT json FROM records WHERE kind='remote_result'").get()!.json).outcome).toBe('unknown');
+  if (kind === 'namespace') expect(existsSync(f.root)).toBe(false);
+});
+
+test.each(['repair', 'replacement', 'extra', 'reference'] as const)('original current GitHub custody refuses %s rather than updating its expected namespace', async kind => {
+  const f = await fixture(), id = f.bundles[0]!.ref.id, path = join(f.root, id), bytes = f.bundles[0]!.bytes;
+  if (kind === 'repair') unlinkSync(path); const cut = f.context.currentGithubCustody();
+  if (kind === 'repair') writeFileSync(path, bytes, { mode: 0o600 });
+  if (kind === 'replacement') { renameSync(path, path + '.old'); writeFileSync(path, bytes, { mode: 0o600 }); unlinkSync(path + '.old'); }
+  if (kind === 'extra') writeFileSync(join(f.root, 'bundle_' + hash('extra')), 'extra', { mode: 0o600 });
+  if (kind === 'reference') f.db.exec("UPDATE records SET json=json_set(json,'$.state','reconcile_only') WHERE kind='selection'");
+  expect(() => cut.assertCurrent()).toThrow();
 });
 
 test('actual current GitHub and DATA15 pins can be read only through their original complete owning writer cut', async () => {

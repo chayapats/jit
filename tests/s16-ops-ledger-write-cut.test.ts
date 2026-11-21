@@ -74,6 +74,17 @@ test('only the original complete live cut can supply current references inside r
   context.currentPayloadReferences().assertCurrent();
 });
 
+test('current byte custody accepts only the original complete live writer cut and expires on its release or parent retirement', async () => {
+  const { context } = await fixture(), original = [context.currentFileCustody().value, context.currentGithubCustody().value], cut = context.currentLedgerCut();
+  const file = context.currentFileCustody(cut), github = context.currentGithubCustody(cut);
+  expect([file.value, github.value]).toEqual(original); file.assertCurrent(); github.assertCurrent();
+  for (const method of [context.currentFileCustody, context.currentGithubCustody]) expect(() => method({ ...cut })).toThrow('s16_ops_source_cut_invalid');
+  cut.close(); expect(() => file.assertCurrent()).toThrow('s16_ops_source_cut_closed'); expect(() => github.assertCurrent()).toThrow('s16_ops_source_cut_closed');
+  const partial = openS16LedgerWriteCut({ sources: [context.sources[0]!], guard: context.assertCurrent });
+  try { for (const method of [context.currentFileCustody, context.currentGithubCustody]) expect(() => method(partial)).toThrow('s16_ops_source_cut_invalid'); } finally { partial.close(); }
+  const fresh = context.currentGithubCustody(); context.retireSources(); expect(() => fresh.assertCurrent()).toThrow(); expect(() => context.currentFileCustody()).toThrow();
+});
+
 test('a fresh complete cut after actual WAL checkpoint retains the same current image while a new current write changes it', async () => {
   const { config, context } = await fixture(), database = context.runtime.sources.find(source => source.name === 'github.sqlite')!.database;
   database.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0'); context.close();

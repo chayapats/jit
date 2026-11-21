@@ -17,6 +17,7 @@ import { s16LedgerSetManifestHash, verifyS16LedgerSet } from './verify-ledger-se
 
 import { ownS16Staging } from './owned-staging';
 import { inspectS16ExecutingPackage } from './package-custody';
+import { assertS16SelectedStores } from './selected-stores';
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const stageBytes = 12884901888, stageNodes = 250000, metadataBound = 4194304;
@@ -60,10 +61,7 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
     let captureAction: string | undefined, publicationAction: string | undefined, data: string | undefined, point: string | undefined;
     try {
       const binary = inspectS16ExecutingPackage(context.sources), configurationSha256 = hash(canonical(config)), command = hash(canonical({ contract: 's16-point-capture-command/v1', configurationSha256, package: binary }));
-      const required = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite'];
-      for (const feature of ['files', 'routines', 'notifications', 'bots', 'connections', 'skills', 'voice'] as const) if (config[feature]) required.push(feature + '.sqlite');
-      if (config.disclosure) required.push('disclosure.sqlite'); if (config.browser || config.disclosure) required.push('browser.sqlite'); if (config.github || config.disclosure) required.push('github.sqlite');
-      const present = new Set(context.runtime.sources.map(row => row.name)); if (required.some(name => !present.has(name))) refuse('s16_ops_selected_store_missing');
+      assertS16SelectedStores(config, context.runtime.sources);
       journal.begin({ requestId, kind: 'backup', hash: command }, journal.read().revision); let state = current(); point = s16PointDirectory(config.directory, state.request.pointId!);
       const publications = state.request.actions.filter(row => row.kind === 'replace');
       if (publications.length > 1 || publications[0] && (publications[0].id !== 'point_publish_' + state.request.targetSha256 || publications[0].targetSha256 !== state.request.targetSha256 || publications[0].priorSha256 !== null)) refuse();
