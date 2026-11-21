@@ -7,7 +7,7 @@ import type { BotDirectory } from '../bots/service';
 import type { FileStore } from '../files/store';
 import type { S16MemoryPort } from '../memory';
 import type { RoutineService } from '../routines/service';
-import type { SearchDocument, SearchTarget } from './contracts';
+import type { SearchDocument, SearchTarget, SearchKind } from './contracts';
 import { searchCapacity, searchId } from './query';
 import { SearchDirectory } from './service';
 
@@ -21,9 +21,10 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
   const owner = (actor: Actor) => app.options.policy.requireOwner(actor);
   const bot = (conversationId: string | null) => conversationId ? options.bots?.conversationBot(conversationId) ?? null : null;
   const historySafe = (requestId: string, text: string) => !app.options.memory || app.options.memory.allowHistory(requestId, text);
-  function request(actor: Actor, id: string): ConversationRequest | null {
+  function request(actor: Actor, id: string, full = false): ConversationRequest | null {
     try {
-      const current = app.view(actor, id);
+      const current = full ? app.readContent(actor, id) : app.view(actor, id);
+      if (!current) return null;
       // Publication failure withholds the whole search row, not just its result snippet/title.
       const original = app.store.db.query<{ had_result: number }, [string]>("SELECT json_type(record_json,'$.result')='text' AS had_result FROM requests WHERE id=?").get(id);
       if (original?.had_result && current.result === null) return null;
@@ -43,13 +44,13 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
       return current;
     } catch (error) {
       owner(actor); // Authentication failures must fence the whole response rather than resemble no hits.
-      if (error instanceof AppError && error.status >= 500) throw error;
+      if (full || error instanceof AppError && error.status >= 500) throw error;
       return null;
     }
   }
-  const fromCommand = (current: ConversationRequest, id: string, text: string, at: number): SearchDocument => ({
+  const fromCommand = (current: ConversationRequest, id: string, text: string, at: number, full = false): SearchDocument => ({
     target: { kind: 'history', id }, title: text || id,
-    text: `${text}\n${id === current.receipt.rootRequestId ? current.result ?? '' : ''}`.slice(0, 65536), state: current.state,
+    text: full ? `${text}\n${id === current.receipt.rootRequestId ? current.result ?? '' : ''}` : `${text}\n${id === current.receipt.rootRequestId ? current.result ?? '' : ''}`.slice(0, 65536), state: current.state,
     at, botId: current.delegation?.botId ?? bot(current.receipt.conversationId),
     source: { kind: 'chat', conversationId: current.receipt.conversationId, requestId: current.receipt.rootRequestId },
   });
@@ -74,38 +75,43 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
       at: claim.createdAt, botId: claim.provenance.scope.kind === 'bot' ? claim.provenance.scope.botId : bot(claim.provenance.origin.conversationId),
       source: { kind: 'memory', id: claim.id }, visibleToBot: selected => visible(claim, selected) }));
   }
-  function documents(actor: Actor): SearchDocument[] {
-    const principal = owner(actor);
-    const ids = app.store.db.query<{ id: string; root_id: string; text: string; at: number }, [string, number]>(`SELECT c.id,c.root_id,json_extract(c.command_json,'$.text') AS text,json_extract(c.receipt_json,'$.receivedAt') AS at FROM commands c JOIN requests r ON r.id=c.root_id
-      WHERE json_extract(r.record_json,'$.owner.id')=? AND json_extract(r.record_json,'$.owner.generation')=? AND json_type(c.command_json,'$.text')='text' AND json_type(r.record_json,'$.decisionCommandHash') IS NULL ORDER BY c.rowid LIMIT 10001`).all(principal.id, principal.generation);
+  function* content(actor: Actor, full: boolean, kinds?: readonly SearchKind[]): Generator<SearchDocument> {
+    const principal = owner(actor), include = (kind: SearchKind) => kinds === undefined || kinds.includes(kind); let count = 0;
+    const checked = (doc: SearchDocument) => { if (++count > searchCapacity) throw new AppError('search_capacity', 413); return doc; };
+    // Enumerate bounded identities before loading text. Keep only a small current-root cache;
+    // an export can stop at its own smaller byte bound without materializing all history bodies.
+    const ids = include('history') ? app.store.db.query<{ id: string; root_id: string; at: number }, [string, number]>(`SELECT c.id,c.root_id,json_extract(c.receipt_json,'$.receivedAt') AS at FROM commands c JOIN requests r ON r.id=c.root_id
+      WHERE json_extract(r.record_json,'$.owner.id')=? AND json_extract(r.record_json,'$.owner.generation')=? AND json_type(c.command_json,'$.text')='text' AND json_type(r.record_json,'$.decisionCommandHash') IS NULL ORDER BY c.rowid LIMIT 10001`).all(principal.id, principal.generation) : [];
     if (ids.length > searchCapacity) throw new AppError('search_capacity', 413);
     const roots = new Map<string, ConversationRequest | null>();
-    const items = ids.flatMap(({ id, root_id, text, at }) => {
-      if (!roots.has(root_id)) roots.set(root_id, request(actor, root_id));
-      const row = roots.get(root_id);
-      return row && historySafe(id, text) && historySafe(root_id, text) ? [fromCommand(row, id, text, at)] : [];
-    });
-    for (const responsibility of options.work.search(actor)) {
-      const origin = request(actor, responsibility.sourceRequestId);
+    for (const { id, root_id, at } of ids) {
+      if (!roots.has(root_id)) { if (roots.size >= 32) roots.delete(roots.keys().next().value!); roots.set(root_id, request(actor, root_id, full)); }
+      const row = roots.get(root_id), command = app.store.db.query<{ text: string }, [string, string]>("SELECT json_extract(command_json,'$.text') AS text FROM commands WHERE id=? AND root_id=? AND json_type(command_json,'$.text')='text'").get(id, root_id);
+      if (row && command && historySafe(id, command.text) && historySafe(root_id, command.text)) yield checked(fromCommand(row, id, command.text, at, full));
+    }
+    for (const responsibility of include('work') ? options.work.search(actor) : []) {
+      const origin = request(actor, responsibility.sourceRequestId, full);
       if (!origin || !historySafe(responsibility.sourceRequestId, responsibility.completion)) continue;
-      items.push({ target: { kind: 'work', id: responsibility.id }, title: responsibility.originalText, text: `${responsibility.originalText}\n${responsibility.completion}`.slice(0, 32768), state: responsibility.state,
+      const text = `${responsibility.originalText}\n${responsibility.completion}`;
+      yield checked({ target: { kind: 'work', id: responsibility.id }, title: responsibility.originalText, text: full ? text : text.slice(0, 32768), state: responsibility.state,
         at: responsibility.createdAt, botId: bot(responsibility.conversationId), source: { kind: 'chat', conversationId: responsibility.conversationId, requestId: responsibility.sourceRequestId } });
     }
-    for (const routine of options.routines?.search(actor) ?? []) {
+    for (const routine of include('routine') ? options.routines?.search(actor) ?? [] : []) {
       if (!historySafe(routine.id, `${routine.draft.name}\n${routine.draft.instruction}`)) continue;
-      items.push({ target: { kind: 'routine', id: routine.id }, title: routine.draft.name, text: `${routine.draft.name}\n${routine.draft.instruction}`, state: routine.state, at: routine.createdAt,
+      yield checked({ target: { kind: 'routine', id: routine.id }, title: routine.draft.name, text: `${routine.draft.name}\n${routine.draft.instruction}`, state: routine.state, at: routine.createdAt,
         botId: bot(routine.draft.conversationId), source: { kind: 'routine', id: routine.id } });
     }
-    items.push(...memoryDocuments(actor));
-    if (options.files) for (const entry of committedArtifacts(app, options.files, actor)) {
-      const artifact = entry.artifact, origin = request(actor, artifact.requestId);
+    if (include('memory')) for (const doc of memoryDocuments(actor)) yield checked(doc);
+    if (include('artifact') && options.files) for (const entry of committedArtifacts(app, options.files, actor, full)) {
+      const artifact = entry.artifact, origin = request(actor, artifact.requestId, full);
       if (!origin || !historySafe(artifact.requestId, artifact.name)) continue;
-      items.push({ target: { kind: 'artifact', id: artifact.id }, title: artifact.name, text: `${artifact.name}\n${artifact.mime}\n${origin.command.text}`.slice(0, 32768), state: 'available', at: artifact.createdAt,
+      const text = `${artifact.name}\n${artifact.mime}\n${origin.command.text}`;
+      yield checked({ target: { kind: 'artifact', id: artifact.id }, title: artifact.name, text: full ? text : text.slice(0, 32768), state: 'available', at: artifact.createdAt,
         botId: origin.delegation?.botId ?? bot(artifact.conversationId), source: { kind: 'artifact', id: artifact.id } });
     }
-    if (items.length > searchCapacity) throw new AppError('search_capacity', 413);
-    owner(actor); return items;
+    owner(actor);
   }
+  const documents = (actor: Actor) => [...content(actor, false)];
   // Resolve by the exact owning ID, independently of search capacity and every navigation window.
   const resolve = (actor: Actor, target: SearchTarget): SearchDocument | null => {
     owner(actor);
@@ -134,5 +140,5 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
     if (!origin || !historySafe(artifact.requestId, artifact.name)) return null;
     return { target, title: artifact.name, text: `${artifact.name}\n${artifact.mime}\n${origin.command.text}`, state: 'available', at: artifact.createdAt, botId: origin.delegation?.botId ?? bot(artifact.conversationId), source: { kind: 'artifact', id: artifact.id } };
   };
-  return new SearchDirectory({ store: app.store, owner, documents, resolve });
+  return new SearchDirectory({ store: app.store, owner, documents, resolve, content: (actor, kinds) => content(actor, true, kinds) });
 }

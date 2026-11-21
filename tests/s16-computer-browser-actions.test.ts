@@ -7,6 +7,7 @@ import { createS16ClientHandler } from "../src/s16/http";
 import { webFixture, origin as webOrigin } from "./fixtures/s15-web";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { parseHTML } from "linkedom";
+import { createContext, runInContext } from "node:vm";
 import { AppError } from "../src/errors";
 import type { BoxStream } from "../src/exec/box-runtime";
 import { ComputerBrowser } from "../src/s16/computers/browser";
@@ -44,8 +45,10 @@ function fixture(label = "Continue", owner: object = {}) {
   for (const e of form.querySelectorAll('[type=password],[type=file],[type=hidden],[autocomplete="one-time-code"]')) Object.defineProperty(e, "value", { get: () => { throw new Error("secret value read"); } });
   Object.defineProperty(form, "requestSubmit", { value: () => { dispatches++; } });
   Object.defineProperty(button, "click", { value: () => { dispatches++; if (redirect) location.href = redirect; } });
-  const location = { href: "https://public.org/" }, global = {};
-  const evaluate = (expression: string) => new Function("document", "location", "NodeFilter", "getComputedStyle", "globalThis", "crypto", "WeakRef", "Event", "KeyboardEvent", `return ${expression}`)(document, location, { SHOW_TEXT: 4, SHOW_ELEMENT: 1 }, () => ({ display: "block", visibility: "visible" }), global, crypto, WeakRef, window.Event, window.Event);
+  const location = { href: "https://public.org/" };
+  // CDP evaluates fixed programs in one persistent document realm, with its own actual globalThis.
+  const realm = createContext({ document, location, NodeFilter: { SHOW_TEXT: 4, SHOW_ELEMENT: 1 }, getComputedStyle: () => ({ display: "block", visibility: "visible" }), crypto, WeakRef, Event: window.Event, KeyboardEvent: window.Event });
+  const evaluate = (expression: string) => runInContext(expression, realm);
   let browser!: ComputerBrowser;
   const screen = new ScreenControl({ store, requireOwner: () => {}, scope: () => ({ kind: "shared" }), device: () => ({ async unavailable() { return null; }, async capture() { return new Uint8Array(); }, async send() {} }), onTransition: vm => browser.invalidate(vm), now: () => now });
   const streams: { closed: boolean }[] = [], methods: string[] = [];
@@ -98,6 +101,20 @@ test("actual DOM input programs: ordinary click/submit/type/select, secret field
   }
   expect(f.dispatches).toBe(2);
 });
+test("document realms retain live targets across GC and still refuse removed identities", async () => {
+  const first = fixture(), second = fixture(), a = await first.observe(), b = await second.observe();
+  const button = (es: typeof a.es) => es.find(e => e.tag === "button")!.id;
+  await Bun.sleep(0); Bun.gc(true);
+  expect((await a.r.execute({ kind: "click", target: button(a.es), generation: a.o.generation })).state).toBe("ok");
+  expect(first.dispatches).toBe(1); expect(second.dispatches).toBe(0); a.r.close();
+  const removed = await first.observe(); first.button.remove();
+  await Bun.sleep(0); Bun.gc(true);
+  await expect(removed.r.execute({ kind: "click", target: button(removed.es), generation: removed.o.generation })).rejects.toMatchObject({ code: "computer_browser_stale" });
+  expect(first.dispatches).toBe(1); removed.r.close();
+  expect((await b.r.execute({ kind: "click", target: button(b.es), generation: b.o.generation })).state).toBe("ok");
+  expect(second.dispatches).toBe(1); expect(first.cards.list(first.owner, "conversation")).toHaveLength(0); expect(second.cards.list(second.owner, "conversation")).toHaveLength(0); b.r.close();
+});
+
 test("held card shows exact nonsecret values, closes posting stream/ticket, survives run end and sends once", async () => {
   const f = fixture("Pay"), h = await held(f);
   expect(f.streams[0]!.closed).toBe(true); expect(f.tickets).toBe(0); expect(f.dispatches).toBe(0);

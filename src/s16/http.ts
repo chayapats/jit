@@ -1,3 +1,5 @@
+import type { OwnerExportService } from './export/service';
+import { ownerExportLimits } from './export/contracts';
 import type { SkillDirectory } from "./skills/service";
 import type { SearchDirectory } from './search/service';
 import type { VoiceService } from "./voice/service";
@@ -39,7 +41,7 @@ import type { ProtectedBrowserPort } from './protected-browser';
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; nativeNotifications?: NativeNotificationService<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; workingState?: WorkingStateService; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; nativeNotifications?: NativeNotificationService<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; workingState?: WorkingStateService; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor>; ownerExport?: OwnerExportService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -63,7 +65,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
     const formats = [ ...["txt", "md", "markdown", "csv", "tsv"].map(extension => ({ extension, mime: "text/plain", bytes: textBytes })),
       ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
       ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
-    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
+    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", ...(options.ownerExport ? { dataExport: { available: true as const, contract: 's16-owner-export/v1' as const, sections: [...options.ownerExport.source.sections], limits: { ...ownerExportLimits } } } : {}), exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
       uploads: files && app.options.files ? { available: true, creationLookup: "s16-upload-creation/v1", limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
@@ -98,6 +100,19 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST") options.authentication.verifyCsrf(current.csrf, request.headers.get("x-csrf-token"));
         return current.actor;
       };
+      if (url.pathname === '/api/s16/client/export') {
+        if (request.method !== 'POST') throw new AppError('method_rejected', 405);
+        if (!options.ownerExport) throw new AppError('owner_export_unavailable', 503);
+        if (url.search) throw new AppError('invalid_body');
+        const input = await body(request);
+        // A streamed request cannot adopt a later owner generation after its initial authentication.
+        const exportOwner = () => { app.options.policy.requireOwner(authenticated.actor); return currentOwner(); };
+        return options.ownerExport.publish(exportOwner, input, ({ bytes, sha256, filename }) => new Response(new Uint8Array(bytes), { headers: {
+          'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(bytes.length), 'Content-Disposition': `attachment; filename="${filename}"`,
+          'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox; frame-ancestors 'none'",
+          'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin', 'X-Content-SHA256': sha256, Vary: 'Cookie',
+        } }));
+      }
       const callList = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/voice\/calls$/.exec(url.pathname);
       const call = /^\/api\/s16\/client\/voice\/calls\/([A-Za-z0-9_-]{1,128})(?:\/(control|turns|captures|playback))?$/.exec(url.pathname);
       if (callList || call) {

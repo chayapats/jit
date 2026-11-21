@@ -42,6 +42,7 @@ export function browserContinuity(path: string, create: boolean, resource: strin
     uncertain(): ActionRef | null { const value = read().uncertain; return value ? JSON.parse(value) as ActionRef : null; },
     arm(action: ActionRef) { const serialized = JSON.stringify(action); db.transaction(() => { if (read().uncertain) throw new BrowserError('reconciliation_required'); db.query('UPDATE browser_state SET uncertain=? WHERE singleton=1').run(serialized); }).immediate(); },
     settle(action: ActionRef) { db.transaction(() => { if (read().uncertain !== JSON.stringify(action)) throw new BrowserError('continuity_unavailable'); db.query('UPDATE browser_state SET uncertain=NULL WHERE singleton=1').run(); }).immediate(); },
+    maintenanceSource: () => db,
     close() { db.close(); },
   };
 }

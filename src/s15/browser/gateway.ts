@@ -437,6 +437,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         return login;
       },
     },
+    maintenanceSource: () => continuity.maintenanceSource(),
     close() { return closing ??= (async () => {
       closed = true; generation = continuity.advance(); stop();
       // Closing the native browser settles its pending renderer operations. Keep broker/continuity

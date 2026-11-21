@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInstaller, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
@@ -36,6 +36,34 @@ function tree(f: ReturnType<typeof fixture>, paths: string[]) {
 const s15Trees = ["var/lib/jit-s15", "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm", "opt/jit-s15", "etc/jit-s15", "etc/sudoers.d", "etc/systemd/system/jit-s15.service", "etc/systemd/system/jit-s15-vm-proxy.socket", "etc/systemd/journald@jit-s15.conf"];
 const otherTrees = (name: "jit" | "jit-s14") => [`var/lib/${name}`, `opt/${name}`, `etc/${name}`, `etc/systemd/system/${name}.service`, `etc/systemd/journald@${name}.conf`];
 const stateMarker = (f: ReturnType<typeof fixture>) => f.at("var/lib/jit-s15/state/runtime/composition.json");
+
+test.each(['selected_files', 'retained_operations', 'selected_routines', 'retained_disabled_routines'] as const)('existing %s refuses the legacy installer path before host/config changes', async mode => {
+  const f = fixture(); await install(f, { release: 'release-a' });
+  const path = f.at(s15Installation.config), configured = JSON.parse(readFileSync(path, 'utf8'));
+  if (mode === 'selected_files') configured.files = true;
+  // Retained operations routes by directory presence even after a missing ledger.
+  if (mode === 'retained_operations') mkdirSync(f.at('var/lib/jit-s15/state/operations'));
+  if (mode === 'selected_routines') configured.routines = true;
+  if (mode === 'retained_disabled_routines') configured.routines = false;
+  writeFileSync(path, JSON.stringify(configured), { mode: 0o640 });
+  const before = tree(f, s15Trees);
+  await expect(install(f, { release: 'release-b' })).rejects.toMatchObject({ step: 's16-guarded-upgrade' });
+  expect(tree(f, s15Trees)).toEqual(before); expect(f.lines.at(-1)).toBe('Step: s16-guarded-upgrade');
+  await expect(install(f, {}, { uninstall: true })).rejects.toMatchObject({ step: 's16-guarded-uninstall' });
+  expect(tree(f, s15Trees)).toEqual(before);
+});
+
+test('a first explicitly selected configuration refuses dummy setup before rewriting its explicit VM choice', async () => {
+  const f = fixture(), path = f.at(s15Installation.config), configured = { ...s15InstallerConfig({ installationId: 'selected_first', vmm: null }), files: true };
+  mkdirSync(f.at(s15Installation.configDir), { recursive: true }); const raw = JSON.stringify(configured); writeFileSync(path, raw, { mode: 0o640 }); const before = tree(f, s15Trees);
+  await expect(install(f, { kvmGroup: true })).rejects.toMatchObject({ step: 's16-first-setup' });
+  expect(readFileSync(path, 'utf8')).toBe(raw); expect(tree(f, s15Trees)).toEqual(before);
+});
+
+test('unknown VMM manager state is not proof that working VMs stopped', async () => {
+  const result = await stopS15WorkingVms({ vmmUid: 1002, async call() { return { exitCode: 1, timedOut: false, stdout: 'unknown\n' }; }, qemuProcesses: () => [] });
+  expect(result.stopped).toBe(false);
+});
 
 test("a fresh S15 install creates the separate installation, its QEMU identity boundary and a credential-free config", async () => {
   const f = fixture(), result = await install(f, { release: "release-a" });
@@ -127,14 +155,97 @@ test("an upgrade switches the release atomically; a failed health check restores
 });
 
 const freshSteps = ["preflight", "disk-reserve", "identity", "directories", "keyring", "vm-identity", "artifact", "configuration", "owner-terminal", "state-initialize", "owner-link-prepare", "service-install", "service-start", "health"];
-test.each(freshSteps)("a fresh install failing at %s leaves no unit, release link or new state, and a re-run completes", async failStep => {
+test.each(freshSteps)("a fresh install failing at %s removes service wiring, retains initialized state and permits an in-place rerun", async failStep => {
   const f = fixture();
   await expect(install(f, { release: "release-a", ...(failStep === "health" ? { health: [false] } : { failStep }) })).rejects.toThrow(`Failed at ${failStep}.`);
-  for (const path of [s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "opt/jit-s15/current", "var/lib/jit-s15/state"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
+  for (const path of [s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "opt/jit-s15/current"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
+  const initialized = freshSteps.indexOf(failStep) > freshSteps.indexOf("state-initialize");
+  expect(existsSync(stateMarker(f))).toBe(initialized);
+  const retained = initialized ? tree(f, ["var/lib/jit-s15/state"]) : null;
   expect(f.lines.includes("Step: rollback")).toBe(["service-install", "service-start", "health"].includes(failStep));
   const result = await install(f, { release: "release-a" });
   expect(result.events.at(-1)).toBe("working-computer");
   expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-a")); expect(existsSync(stateMarker(f))).toBe(true);
+  if (retained) expect(tree(f, ["var/lib/jit-s15/state"])).toEqual(retained);
+});
+
+test.each(["manifest", "state", "config"])("missing current %s refuses before host or configuration changes without replacing the installation", async missing => {
+  const f = fixture(); await install(f, { release: "release-a" });
+  writeFileSync(f.at("var/lib/jit-s15/state/authority"), "current policy, withdrawal, usage and unknown-effect evidence");
+  rmSync(missing === "manifest" ? stateMarker(f) : f.at(missing === "state" ? "var/lib/jit-s15/state" : s15Installation.config), { recursive: missing === "state" });
+  const before = tree(f, s15Trees), lineCount = f.lines.length;
+  await expect(install(f, { release: "release-b" })).rejects.toThrow(/Failed at preflight.*automatic re-initialization is refused/);
+  expect(f.lines.slice(lineCount)).toEqual(["Step: preflight"]);
+  expect(tree(f, s15Trees)).toEqual(before);
+  expect(readdirSync(f.at("var/lib/jit-s15")).some(name => name.startsWith("state.interrupted-"))).toBe(false);
+});
+
+test("an orphan state directory without its original config refuses untouched rather than adopting it into a new installation", async () => {
+  const f = fixture();
+  mkdirSync(f.at("var/lib/jit-s15/state/runtime"), { recursive: true });
+  writeFileSync(stateMarker(f), JSON.stringify({ contract: "s15-composition/v1" }));
+  writeFileSync(f.at("var/lib/jit-s15/state/owner"), "retained original identity");
+  const before = tree(f, s15Trees);
+  await expect(install(f)).rejects.toThrow(/Failed at preflight.*automatic re-initialization is refused/);
+  expect(tree(f, s15Trees)).toEqual(before); expect(f.lines).toEqual(["Step: preflight"]);
+});
+
+test("a failed fresh service's writes survive cleanup and a successful in-place rerun", async () => {
+  const f = fixture(); let written: ReturnType<typeof tree> = [];
+  const started = () => {
+    writeFileSync(f.at("var/lib/jit-s15/state/current-facts"), "owner, policy, withdrawal, charged usage, unknown effect");
+    written = tree(f, ["var/lib/jit-s15/state"]);
+  };
+  await expect(install(f, { release: "release-a", started, health: [false] })).rejects.toThrow(/Configuration and any initialized state were retained in place/);
+  expect(tree(f, ["var/lib/jit-s15/state"])).toEqual(written);
+  await install(f, { release: "release-a" });
+  expect(tree(f, ["var/lib/jit-s15/state"])).toEqual(written);
+});
+
+test("an owner-link preparation failure before service wiring retains initialized state", async () => {
+  const f = fixture(); let initialized: ReturnType<typeof tree> = [];
+  await expect(install(f, {}, { ownerLink: async () => {
+    writeFileSync(f.at("var/lib/jit-s15/state/owner"), "owner facts written before failed link delivery");
+    initialized = tree(f, ["var/lib/jit-s15/state"]);
+    throw new Error("fixture_link_prepare_failure");
+  } })).rejects.toThrow(/Failed at owner-link-prepare/);
+  expect(tree(f, ["var/lib/jit-s15/state"])).toEqual(initialized);
+  expect(existsSync(f.at(s15Installation.unit))).toBe(false);
+  await install(f); expect(tree(f, ["var/lib/jit-s15/state"])).toEqual(initialized);
+});
+
+test("state appearing after preflight is retained and refused instead of adopted", async () => {
+  const f = fixture();
+  const out = (line: string) => {
+    if (line === "Step: state-initialize") {
+      mkdirSync(f.at("var/lib/jit-s15/state/runtime"), { recursive: true });
+      writeFileSync(stateMarker(f), JSON.stringify({ contract: "s15-composition/v1" }));
+      writeFileSync(f.at("var/lib/jit-s15/state/authority"), "another initializer's facts");
+    }
+  };
+  await expect(install(f, {}, { out })).rejects.toThrow(/Failed at state-initialize.*automatic re-initialization is refused/);
+  expect(readFileSync(f.at("var/lib/jit-s15/state/authority"), "utf8")).toBe("another initializer's facts");
+  expect(existsSync(f.at(s15Installation.unit))).toBe(false);
+});
+
+test.each(["marker", "directory", "replaced-directory"])("current %s lost after preflight is never reconstructed by initialization or fallback", async missing => {
+  const f = fixture(); await install(f, { release: "release-a" });
+  const aside = f.at("var/lib/jit-s15/original-retained");
+  const out = (line: string) => {
+    if (line !== "Step: state-initialize") return;
+    if (missing === "marker") rmSync(stateMarker(f));
+    else {
+      renameSync(f.at("var/lib/jit-s15/state"), aside);
+      if (missing === "replaced-directory") {
+        mkdirSync(f.at("var/lib/jit-s15/state/runtime"), { recursive: true });
+        writeFileSync(stateMarker(f), "replacement marker must stay unchanged");
+      }
+    }
+  };
+  await expect(install(f, { release: "release-b" }, { out })).rejects.toThrow(/Failed at state-initialize.*automatic re-initialization is refused/);
+  if (missing === "replaced-directory") expect(readFileSync(stateMarker(f), "utf8")).toBe("replacement marker must stay unchanged");
+  else expect(existsSync(stateMarker(f))).toBe(false);
+  if (missing !== "marker") expect(existsSync(join(aside, "runtime/composition.json"))).toBe(true);
 });
 
 test.each([...freshSteps.filter(step => step !== "preflight"), "service-stop"])("an upgrade failing at %s keeps the previous release, unit, config and state", async failStep => {

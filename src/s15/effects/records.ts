@@ -43,7 +43,7 @@ function validateEdit(value: unknown): asserts value is FixtureRecordEdit {
  */
 export function openFixtureRecordService(options: { runtime: 's15'; path: string; create: boolean; resource: Ref; rule: () => Ref | null; recipients: () => readonly { id: string; ref: Ref }[] }) {
   if (options.runtime !== 's15') fail('runtime_opt_in_required'); ref(options.resource);
-  const db = new Database(options.path, { create: options.create }); db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000');
+  const db = new Database(options.path, { create: options.create, readwrite: true }); db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000');
   if (options.create) db.exec(`CREATE TABLE records (id TEXT PRIMARY KEY, json TEXT NOT NULL); CREATE TABLE versions (id TEXT, version INTEGER, json TEXT NOT NULL, PRIMARY KEY(id,version)); CREATE TABLE evidence (id TEXT PRIMARY KEY, json TEXT NOT NULL); CREATE TABLE evidence_versions (id TEXT, revision INTEGER, json TEXT NOT NULL, PRIMARY KEY(id,revision)); CREATE TABLE operations (id TEXT PRIMARY KEY, input TEXT NOT NULL, result TEXT NOT NULL); PRAGMA user_version=1; PRAGMA application_id=1246900533;`);
   if ((db.query('PRAGMA application_id').get() as { application_id: number }).application_id !== 1246900533 || (db.query('PRAGMA user_version').get() as { user_version: number }).user_version !== 1) { db.close(); fail('continuity_unavailable'); }
   const getRecord = (recordId: string, version?: number): FixtureRecord => {
