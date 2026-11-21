@@ -65,3 +65,10 @@ profiles. Unrecorded package/client/parser digests remain blockers even if all
 source inputs pass. Exit 0 means static validation succeeded; execution exits 2
 while required acceptance remains blocked and writes the partial receipt. Exit 1
 means arguments, source cleanliness or another precondition refused execution.
+
+On macOS only, installed `desktop_web` fixtures omit HOME so vendor Chrome uses
+OS default account resolution for its persistent cookie/native credential store.
+The source fingerprint records this explicit basis. Jit fixture state,
+exact-service browser profiles, TMP and cache stay private. Other profiles and
+Linux keep private HOME. No operator browser profile or session is copied, and
+the launcher retains its actual signature/sandbox/native credential behavior.

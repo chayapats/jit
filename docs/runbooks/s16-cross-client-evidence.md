@@ -37,6 +37,13 @@ no profile/account data belongs in this copy. Executable, Info.plist and signed
 resource-index hashes are recorded before/after. A missing or invalid browser is unavailable;
 the executor never downloads it or substitutes native device evidence.
 
+macOS `desktop_web` omits HOME so installed Chrome can use the OS account's
+persistent cookie/native credential service. A synthetic HOME stalled actual
+cookie storage before PWA setup. TMP/cache, owning Jit data and exact-service
+profiles stay private; other profiles retain private HOME. This finite exception
+is recorded in source fingerprints. The runner copies no operator browser
+profile/session and retains the actual vendor signature and sandbox.
+
 Each declared suite runs separately under the profile's finite wall-clock budget
 (at most ten minutes), with a 64 KiB combined output bound and process-group
 SIGTERM/SIGKILL disposal. Bun's default per-test timeout is 30 seconds; existing

@@ -40,3 +40,14 @@ Chrome whose complete original vendor signature passes the unchanged launcher
 guard. No account/profile is copied, browser is downloaded or global install is
 altered. Evidence grants no execution, disclosure, policy, deployment or adoption
 authority and changes no S14 default or S15 opt-in behavior.
+
+The actual compiled macOS desktop fixture hangs in Chrome's persistent
+`Storage.setCookies` with a synthetic HOME, before any PWA command. The same
+bounded probe with the OS account context completes cookie storage, PWA
+installation/launch and uninstall. Select OS default HOME resolution for only
+the macOS `desktop_web` profile: omit HOME instead of inheriting an operator
+value. Jit fixture data, exact-service profiles, TMP and cache remain private;
+other profiles retain private HOME. Record this finite environment basis in
+source fingerprints. Keep the actual vendor signature, sandbox and native
+credential-store behavior. No browser profile/session or credential is copied,
+and real OS credential-store/device acceptance remains separately pending.

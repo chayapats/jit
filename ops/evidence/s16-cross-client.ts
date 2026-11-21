@@ -88,7 +88,8 @@ async function fingerprint(matrix: S16EvidenceMatrix) {
     engine: { contract: RELEASE_CONTRACT, revision: 'unverified', basis: 'executing_public_host_contract_and_vendored_archive' },
     vendor: readdirSync(join(root, 'vendor')).sort().map(name => ({ name, sha256: hash(readFileSync(s16EvidencePath(root, 'vendor/' + name)!)) })),
     platform: process.platform, arch: process.arch, bunVersion: Bun.version, bunSha256: hash(readFileSync(process.execPath)), fixtureParserTools: await s16FixtureParserTools(),
-    fixtureBrowser: browser ? { state: 'recorded' as const, ...browser.evidence } : { state: 'unavailable' as const } };
+    fixtureBrowser: browser ? { state: 'recorded' as const, ...browser.evidence } : { state: 'unavailable' as const },
+    desktopFixtureHome: process.platform === 'darwin' ? 'os_default_without_home_environment' : 'private_fixture_home' };
 }
 function freshOutput(path: string): string {
   if (!isAbsolute(path) || resolve(path) !== path || !path.startsWith(join(root, '.local') + '/') || existsSync(path)) throw Error('s16_matrix_output_invalid');
@@ -110,6 +111,9 @@ async function executeProfile(profile: S16EvidenceProfile, out: string, delivery
   const suites: S16SuiteEvidence[] = [], privateRoot = join(out, profile.id); mkdirSync(privateRoot, { mode: 0o700 });
   for (const directory of ['home', 'tmp', 'cache']) mkdirSync(join(privateRoot, directory), { mode: 0o700 });
   const env: Record<string, string> = { PATH: s16FixturePath(), HOME: join(privateRoot, 'home'), TMPDIR: join(privateRoot, 'tmp'), XDG_CACHE_HOME: join(privateRoot, 'cache'), NO_COLOR: '1', TZ: 'UTC' };
+  // Vendor Chrome's persistent cookie store needs the macOS account context.
+  // Omit HOME only here; managed browser profiles, fixture state/TMP/cache stay private.
+  if (process.platform === 'darwin' && profile.id === 'desktop_web') delete env.HOME;
   const browser = profile.kind === 'browser' ? await s16FixtureBrowser(root) : null;
   if (browser) Object.assign(env, { JIT_S16_BROWSER_TESTS: '1', JIT_S16_DESKTOP_TESTS: '1', JIT_BROWSER_LIVE: '1', JIT_BROWSER_EXECUTABLE: browser.path });
   for (const [index, suite] of profile.suites.entries()) {
