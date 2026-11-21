@@ -53,6 +53,37 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 These metadata operations do not complete aggregate acceptance or owner-host
 cutover; compatible release/client lifecycle acceptance remains separate.
 
+## Guarded release coordinator
+
+The [guarded selection protocol](../contracts/s16-guarded-release-selection-v1.md)
+and [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) implement the
+protected service/root component. The installer/supervisor adapter and actual
+owning service/client lifecycle remain in progress; there is no new standalone
+public upgrade command in this component.
+
+The trusted root coordinator keeps a retained sealed operator, original private
+job plans and root process exclusion. It stops the controller conclusively,
+completes a protected **current** backup, records original upgrade/selector intent,
+and executes both actual packages' current readers and completed-backup response
+paths before selecting code. Source/target/operator use compatible pinned Bun,
+engine, lock and dependencies. Current SQL/payload/helper/external/native proof
+remains separate from root path-value readback. Missing original evidence refuses;
+never delete a gate or recreate staging to get an upgrade through.
+
+A failed trial requires another conclusive stop and a new reverse selection
+over a fresh current backup. Trial policies, withdrawals, charges, private scope
+and unknown receipts stay current. The coordinator never restores an old
+composition or authority snapshot. If fallback readership is unsupported, only
+an original **unarmed** plan may be discarded after fresh actual current-source
+proof. The failed job then requires a distinct verified forward operation. Any
+selector intent/uncertain physical boundary remains fenced for original owning
+reconciliation. Keep all retained packages, private root plans and current state.
+
+Completed root jobs return historical receipts without stopping a later service
+or changing its selector/state. That result does not assert current health.
+Root plans are private metadata, not ordinary exports or execution grants.
+Disposable UID/supervisor ports in conformance do not certify Linux adoption.
+
 ## Ordinary owner export
 
 The available **Export your data** entry in the S16 rail opens a current-scope

@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { RELEASE_CONTRACT } from 'schway/host';
-import { buildPackage, installArtifactDependencies, readDependencyRecord, validateArtifact, type BuildManifest } from '../ops/package/bun-build';
-import { openS16PackageReaderProbe } from '../ops/package/installer/s16-package-probe';
+import { artifactContentHash, buildPackage, installArtifactDependencies, manifestMetadata, readDependencyRecord, validateArtifact, type BuildManifest } from '../ops/package/bun-build';
+import { openS16PackageReaderProbe, s16PackageNativeNamespaceSha256 } from '../ops/package/installer/s16-package-probe';
 import { spawnRunner } from '../src/ops/supervisor';
 import { s15StageConfig } from '../ops/evidence/s15-stage';
 import { readS15RuntimeConfig } from '../src/s15/runtime-config';
 import { canonical } from '../src/s15/conversation/validation';
 import { adoptS16Operations } from '../src/s16/operations/adoption';
 import { openS16ControlMaintenance } from '../src/s16/operations/control-maintenance';
-import { readS16OperationsFence } from '../src/s16/operations/operations-state';
+import { canonicalS16OperationsControl, readS16OperationsControl, readS16OperationsFence } from '../src/s16/operations/operations-state';
 import { opsDirectory, opsWrite } from '../src/s14/ops-files';
 
 let parent: string;
@@ -83,6 +83,23 @@ test('the actual earlier sealed package reads current v3 control under its own g
   expect(probe.released).toBe(false); probe.close(); expect(probe.released).toBe(true); f.unchanged();
 });
 
+test('actual target readers observe more than 256 known native roots without command-array limits or current writes', async () => {
+  const f = await fixture(), database = new Database(join(f.config.directory, 'runtime/model.sqlite'), { readwrite: true, create: false });
+  // Real owning schema and directories with explicit protocol correlations, not dispatched model work.
+  for (let index = 0; index < 300; index++) {
+    const id = 'retained_' + String(index).padStart(4, '0'), directory = join(f.config.directory, 'runtime/native-model', id);
+    database.query('INSERT INTO records(id,json) VALUES (?,?)').run(id, JSON.stringify({ contract: 's15-model-selection/v1', id, state: 'reconcile_only', session: null }));
+    mkdirSync(directory, { recursive: true, mode: 0o700 }); for (const name of ['workspace', 'home', 'sessions']) mkdirSync(join(directory, name), { mode: 0o700 });
+  } database.close(true);
+  const ctx = openS16ControlMaintenance(f.config, { operationFence: readS16OperationsFence(f.config.directory) }), namespace = ctx.nativeNamespace(), small = { roots: namespace.roots.slice(0, 2), pending: namespace.pending.slice(0, 2), untracked: namespace.untracked };
+  expect(namespace.roots).toHaveLength(300); expect(s16PackageNativeNamespaceSha256(small)).toBe(hash(canonical(small)));
+  const expected = s16PackageNativeNamespaceSha256(namespace), sql = ctx.sources.map(source => hash(source.database.serialize())), controlPath = join(f.config.directory, 'operations/control.json'), control = readFileSync(controlPath), fencePath = join(f.config.directory, 'owner/owner.sqlite.ops/fence.json'), fence = readFileSync(fencePath); ctx.close();
+  const probe = await openS16PackageReaderProbe(f.input(), { pathPolicy: f.policy }); cleanups.push(() => probe.close());
+  expect((await probe.observe()).custody.nativeNamespaceSha256).toBe(expected); probe.close();
+  expect(readFileSync(controlPath)).toEqual(control); expect(readFileSync(fencePath)).toEqual(fence);
+  const current = openS16ControlMaintenance(f.config, { operationFence: readS16OperationsFence(f.config.directory) }); try { expect(current.sources.map(source => hash(source.database.serialize()))).toEqual(sql); } finally { current.close(); }
+});
+
 test.each(['hash', 'config', 'unsupported_package', 'production_path_policy'] as const)('target probe refuses %s without current-state or gate mutation', async mode => {
   const f = await fixture(), input = f.input(mode === 'unsupported_package' ? 2 : 1);
   if (mode === 'hash') input.packageSha256 = '0'.repeat(64);
@@ -100,6 +117,32 @@ test('changed target code under the original content pin refuses before any curr
     await expect(openS16PackageReaderProbe(f.input(), { pathPolicy: f.policy })).rejects.toThrow('s16_package_probe_artifact_changed');
   } finally { writeFileSync(entry, original); }
   f.unchanged();
+});
+
+test('matching package/dependency metadata cannot substitute a different Bun runtime for the actual executing version', async () => {
+  const f = await fixture(), paths = ['manifest.json', 'dependencies.json'].map(name => join(packages[1]!.path, name)), before = paths.map(path => readFileSync(path));
+  try {
+    // A self-consistent metadata fixture with an independently supplied new content pin.
+    const manifest = JSON.parse(before[0]!.toString()) as BuildManifest, dependencies = JSON.parse(before[1]!.toString()); manifest.bunVersion = '0.0.0';
+    manifest.contentHash = artifactContentHash(packages[1]!.path, manifestMetadata(manifest)); dependencies.bunVersion = manifest.bunVersion; dependencies.contentHash = manifest.contentHash;
+    writeFileSync(paths[0]!, JSON.stringify(manifest)); writeFileSync(paths[1]!, JSON.stringify(dependencies));
+    expect(validateArtifact(packages[1]!.path, { runtime: true }).ok).toBe(true);
+    await expect(openS16PackageReaderProbe({ ...f.input(), packageSha256: manifest.contentHash }, { pathPolicy: f.policy })).rejects.toThrow('s16_package_probe_artifact_changed'); f.unchanged();
+  } finally { paths.forEach((path, index) => writeFileSync(path, before[index]!)); }
+});
+
+test('actual earlier readers hash a valid aggregate control larger than a single command without metadata mutation', async () => {
+  const f = await fixture(), controlPath = join(f.config.directory, 'operations/control.json'), control = readS16OperationsControl(f.config.directory);
+  // Explicit retained-metadata protocol fixture, not executed export jobs or grants.
+  // Every original receipt stays below its own bound; the aggregate has its existing 4 MiB bound.
+  for (let index = 0; index < 32; index++) control.requests.push({ id: 'e'.repeat(24) + index.toString(16).padStart(8, '0'), requestId: 'metadata_fixture_' + index,
+    kind: 'export', hash: 'c'.repeat(64), phase: 'complete', status: 'complete', pointId: null, cohortSha256: 'c'.repeat(64), targetSha256: 'c'.repeat(64), createdAt: control.adoption.createdAt, updatedAt: control.adoption.createdAt, revision: 1, reason: null, configurationSha256: control.adoption.configurationSha256, admittedRevision: 1, abort: null,
+    actions: Array.from({ length: 24 }, (_, action) => ({ id: ('metadata_action_' + action + '_').padEnd(120, 'x'), kind: 'capture_backend' as const, priorSha256: null, targetSha256: null, state: 'confirmed' as const, observedSha256: 'c'.repeat(64) })) });
+  const encoded = canonicalS16OperationsControl(control); expect(Buffer.byteLength(encoded)).toBeGreaterThan(131072); writeFileSync(controlPath, encoded);
+  const fencePath = join(f.config.directory, 'owner/owner.sqlite.ops/fence.json'), fence = readFileSync(fencePath), ctx = openS16ControlMaintenance(f.config, { operationFence: readS16OperationsFence(f.config.directory) }), sql = ctx.sources.map(source => hash(source.database.serialize())); ctx.close();
+  const probe = await openS16PackageReaderProbe(f.input(), { pathPolicy: f.policy }); cleanups.push(() => probe.close()); expect((await probe.observe()).controlSha256).toBe(hash(encoded)); probe.close();
+  expect(readFileSync(controlPath, 'utf8')).toBe(encoded); expect(readFileSync(fencePath)).toEqual(fence);
+  const current = openS16ControlMaintenance(f.config, { operationFence: readS16OperationsFence(f.config.directory) }); try { expect(current.sources.map(source => hash(source.database.serialize()))).toEqual(sql); } finally { current.close(); }
 });
 
 test.each(['future_format', 'missing_current_store'] as const)('actual target owning readers refuse %s without empty reconstruction or metadata rewrites', async mode => {

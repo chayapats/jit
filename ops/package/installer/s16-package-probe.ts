@@ -6,6 +6,7 @@ import { canonical } from '../../../src/s15/conversation/validation';
 import type { S16ControlMaintenance } from '../../../src/s16/operations/control-maintenance';
 import type { S16LedgerWriteCut } from '../../../src/s16/operations/ledger-write-cut';
 import type { S16PointPackage } from '../../../src/s16/operations/point-files';
+import type { S16NativeNamespace } from '../../../src/s16/operations/native-namespace';
 import { validateArtifact } from '../bun-build';
 import { assertRootTree, type RootPathPolicy } from '../trusted-paths';
 
@@ -29,6 +30,14 @@ export interface S16PackageReaderProbe { readonly released: boolean; observe(): 
 /** Only trusted fixture composition may supply a fake-root policy; the CLI uses the production root-owned policy. */
 export interface S16PackageProbeOptions { pathPolicy?: RootPathPolicy }
 
+/** Bounded per-row metadata encoding preserves small-set hashes without command-array limits on native roots. */
+export function s16PackageNativeNamespaceSha256(namespace: Pick<S16NativeNamespace, 'roots' | 'pending' | 'untracked'>): string {
+  const fields = ['pending', 'roots', 'untracked'] as const;
+  if (fields.some(field => !Array.isArray(namespace[field]) || namespace[field].length > 20000)) refuse('s16_package_probe_namespace_bounds');
+  const encoded = '{' + fields.map(field => JSON.stringify(field) + ':[' + namespace[field].map(row => canonical(row)).join(',') + ']').join(',') + '}';
+  if (Buffer.byteLength(encoded) > 4194304) refuse('s16_package_probe_namespace_bounds'); return hash(encoded);
+}
+
 /**
  * Verifies and loads the actual target package's readers, then returns before opening current sources.
  * This capability grants no selector write, gate clearance, migration or service/client acceptance.
@@ -38,7 +47,7 @@ export async function openS16PackageReaderProbe(input: S16PackageProbeInput, opt
   const verified = () => {
     assertRootTree(input.targetDirectory, options.pathPolicy);
     const checked = validateArtifact(input.targetDirectory, { runtime: true });
-    if (!checked.ok || checked.manifest?.contentHash !== input.packageSha256) refuse('s16_package_probe_artifact_changed');
+    if (!checked.ok || checked.manifest?.contentHash !== input.packageSha256 || checked.manifest.bunVersion !== Bun.version) refuse('s16_package_probe_artifact_changed');
   };
   verified();
   // Each module resolves its own package and genuine private capability maps. No target API is emulated.
@@ -47,7 +56,7 @@ export async function openS16PackageReaderProbe(input: S16PackageProbeInput, opt
   const contextModule = await load('src/s16/operations/control-maintenance.ts') as typeof import('../../../src/s16/operations/control-maintenance');
   const stateModule = await load('src/s16/operations/operations-state.ts') as typeof import('../../../src/s16/operations/operations-state');
   const packageModule = await load('src/s16/operations/package-custody.ts') as typeof import('../../../src/s16/operations/package-custody');
-  if (typeof configModule.readS15RuntimeConfig !== 'function' || typeof contextModule.openS16ControlMaintenance !== 'function' || typeof stateModule.readS16OperationsFence !== 'function' || typeof packageModule.inspectS16ExecutingPackage !== 'function') refuse('s16_package_probe_reader_unavailable');
+  if (typeof configModule.readS15RuntimeConfig !== 'function' || typeof contextModule.openS16ControlMaintenance !== 'function' || typeof stateModule.readS16OperationsFence !== 'function' || typeof stateModule.canonicalS16OperationsControl !== 'function' || typeof packageModule.inspectS16ExecutingPackage !== 'function') refuse('s16_package_probe_reader_unavailable');
   verified();
   let context: S16ControlMaintenance | undefined, cut: S16LedgerWriteCut | undefined, released = false, busy = false, attempted = false;
   const releaseCut = () => { cut?.close(); };
@@ -65,10 +74,10 @@ export async function openS16PackageReaderProbe(input: S16PackageProbeInput, opt
       const fencePath = join(config.directory, 'owner/owner.sqlite.ops/fence.json');
       context = contextModule.openS16ControlMaintenance(config, lstatSync(fencePath, { throwIfNoEntry: false }) ? { operationFence: stateModule.readS16OperationsFence(config.directory) } : {});
       if (typeof context.currentLedgerCut !== 'function' || typeof context.fileCustody !== 'function' || typeof context.githubArtifacts !== 'function' || typeof context.externalCustody !== 'function' || typeof context.helperCustody !== 'function' || typeof context.nativeNamespace !== 'function') refuse('s16_package_probe_reader_unavailable');
-      const current = context, journal = current.operations(), controlSha256 = hash(canonical(journal.read())), binary = packageModule.inspectS16ExecutingPackage(current.sources);
+      const current = context, journal = current.operations(), controlSha256 = hash(stateModule.canonicalS16OperationsControl(journal.read())), binary = packageModule.inspectS16ExecutingPackage(current.sources);
       if (binary.contentHash !== input.packageSha256) refuse('s16_package_probe_artifact_changed');
       const files = current.fileCustody(), github = current.githubArtifacts(), external = current.externalCustody(), native = current.nativeNamespace();
-      const namespaceSha256 = hash(canonical({ roots: native.roots, pending: native.pending, untracked: native.untracked }));
+      const namespaceSha256 = s16PackageNativeNamespaceSha256(native);
       const helpers = await current.helperCustody(); guard();
       const captureSql = () => {
         guard(); if (cut && !cut.released) refuse('s16_ops_source_release_unknown'); const held = current.currentLedgerCut(); cut = held;
@@ -84,7 +93,7 @@ export async function openS16PackageReaderProbe(input: S16PackageProbeInput, opt
         } finally { releaseCut(); }
       };
       const sql = captureSql(); external.assertCurrent(); await helpers.assertCurrent(); external.assertCurrent(); guard();
-      if (canonical(captureSql()) !== canonical(sql) || hash(canonical(journal.read())) !== controlSha256 || canonical(packageModule.inspectS16ExecutingPackage(current.sources)) !== canonical(binary)) refuse('s16_package_probe_current_changed');
+      if (canonical(captureSql()) !== canonical(sql) || hash(stateModule.canonicalS16OperationsControl(journal.read())) !== controlSha256 || canonical(packageModule.inspectS16ExecutingPackage(current.sources)) !== canonical(binary)) refuse('s16_package_probe_current_changed');
       files.assertCurrent(); github.assertCurrent(); external.assertCurrent(); native.assertCurrent(); verified(); guard();
       return Object.freeze({ contract: 's16-package-current-readers/v1', state: 'readable', configurationSha256: input.configurationSha256, ownerIdentitySha256: hash(current.ownerIdentity), package: binary, controlSha256,
         sql: Object.freeze(sql.map(row => Object.freeze(row))), custody: Object.freeze({ fileSha256: files.sha256, githubSha256: github.sha256, externalSha256: external.sha256, helperSha256: helpers.sha256, nativeNamespaceSha256: namespaceSha256 }),
