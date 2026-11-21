@@ -129,3 +129,14 @@ Source inputs matched afterwards, container inventory was empty, and the
 task-owned VM's shutdown was read back. This is separate from the 885 matrix
 executions and the immutable delivery receipt; nested working-VM, account,
 device and owner-host acceptance remain independent.
+
+## Later same-source Linux protected-browser supplement
+
+The [Linux browser proof](s16-linux-browser-proof.md) ran the unchanged actual
+protected-engine suites at `beab27ae`: 12 passing cases, 219 assertions, no
+failures/skips. It includes synthetic authority/login/egress/intents and a
+separate actual read-only public JavaScript task. Full source and Chromium
+distribution seals matched before/after; the public screenshot was inspected
+and task-VM shutdown verified. This is a separately supplied host Chromium
+fixture, outside the 885 matrix case executions and without private-account,
+production/nested-VM, physical-device or owner-adoption acceptance.
