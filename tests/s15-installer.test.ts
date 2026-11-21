@@ -37,6 +37,19 @@ const s15Trees = ["var/lib/jit-s15", "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm"
 const otherTrees = (name: "jit" | "jit-s14") => [`var/lib/${name}`, `opt/${name}`, `etc/${name}`, `etc/systemd/system/${name}.service`, `etc/systemd/journald@${name}.conf`];
 const stateMarker = (f: ReturnType<typeof fixture>) => f.at("var/lib/jit-s15/state/runtime/composition.json");
 
+test.each(['selected_files', 'retained_operations', 'selected_routines'] as const)('existing %s refuses the legacy installer path before host/config changes', async mode => {
+  const f = fixture(); await install(f, { release: 'release-a' });
+  const path = f.at(s15Installation.config), configured = JSON.parse(readFileSync(path, 'utf8'));
+  if (mode === 'selected_files') configured.files = true;
+  // Retained operations routes by directory presence even after a missing ledger.
+  if (mode === 'retained_operations') mkdirSync(f.at('var/lib/jit-s15/state/operations'));
+  if (mode === 'selected_routines') configured.routines = true;
+  writeFileSync(path, JSON.stringify(configured), { mode: 0o640 });
+  const before = tree(f, s15Trees);
+  await expect(install(f, { release: 'release-b' })).rejects.toMatchObject({ step: 's16-guarded-upgrade' });
+  expect(tree(f, s15Trees)).toEqual(before); expect(f.lines.at(-1)).toBe('Step: s16-guarded-upgrade');
+});
+
 test("a fresh S15 install creates the separate installation, its QEMU identity boundary and a credential-free config", async () => {
   const f = fixture(), result = await install(f, { release: "release-a" });
   expect(result.events).toEqual(["preflight", "disk-reserve", "identity", "directories", "keyring", "vm-identity", "artifact", "configuration", "owner-terminal", "state-initialize", "owner-link-prepare", "service-install", "service-start", "health", "owner-link", "working-computer"]);

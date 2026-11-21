@@ -16,6 +16,8 @@ import { personalServiceBinding } from "../../../src/s14/personal-origin";
 import { zero } from "../../../src/s15/policy/validation";
 import { en } from "../../../src/i18n/en";
 import { th } from "../../../src/i18n/th";
+import { RELEASE_CONTRACT } from "schway/host";
+import { openS16InstalledUpgrade } from "./s16-installed-upgrade";
 
 const MiB = 1024 ** 2;
 
@@ -450,6 +452,21 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       if (!originalState.isDirectory() || !preserved) throw stateFailure();
       requireComposition();
     } else if ([paths.unit, paths.current, paths.installerState].some(path => lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw stateFailure();
+    // Selected file/routine/voice formats and every adopted/partially retained
+    // operations installation must never enter the legacy composition rollback.
+    const guarded = originalState && (lstatSync(join(paths.state, "operations"), { throwIfNoEntry: false }) !== undefined ||
+      preserved?.files !== undefined || preserved?.fileMemory !== undefined || preserved?.routines === true || preserved?.voice !== undefined);
+    if (guarded) {
+      step("s16-guarded-upgrade", "preserve the original config, state, service identity and unit; finish explicit operations adoption if missing, then resume this installer with its retained job. Do not restore an old composition manifest");
+      if (dry) throw new InstallerFailure(currentStep, "the dry-run S15 simulator cannot certify an adopted S16 upgrade; use the disposable guarded installer conformance suite");
+      const upgrade = openS16InstalledUpgrade({ source: resolve(options.source), installation: { configPath: p.config, state: p.state, unitPath: p.unit, unit: p.service, prefix: p.prefix, home: p.home, user: p.user, bunPath: options.bunPath } }, { run, ...(options.sleep ? { sleep: options.sleep } : {}) });
+      try {
+        const result = await upgrade.run();
+        out(result.outcome === "fallback_healthy" ? "The target failed its trial. A compatible prior executable is healthy over current state; no historical data was restored." : result.outcome === "unchanged" ? "The selected code is unchanged; no new operation or health receipt was produced." : "The guarded S16 upgrade completed with current state preserved.");
+        if (result.outcome === "fallback_healthy") throw new InstallerFailure(currentStep, "the target trial failed; the compatible prior executable is healthy over current state. Fix the target and re-run; no historical data was restored");
+        return { events, config: preserved, computer: null, release: result.release, rolledBack: false };
+      } finally { upgrade.close(); }
+    }
     // Local VM support: kept once installed; added when the host gains a kvm group (QEMU/KVM packages).
     let local = preserved?.vm.local === true;
 
@@ -557,7 +574,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       let artifact = resolve(options.source);
       const staging = join(paths.prefix, `staging-${randomBytes(8).toString("hex")}`); ownedStaging = staging;
       if (existsSync(join(artifact, "manifest.json"))) cpSync(artifact, staging, { recursive: true });
-      else buildPackage({ srcDir: artifact, outDir: staging, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+      else buildPackage({ srcDir: artifact, outDir: staging, engineContract: RELEASE_CONTRACT, engineRevision: null });
       artifact = staging;
       const expected = validateArtifact(artifact);
       if (!expected.ok || !expected.manifest) throw new InstallerFailure(currentStep, next);

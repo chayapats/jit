@@ -42,6 +42,14 @@ export interface S16RootReleaseSelector {
   close(): void;
 }
 
+const originalSelectors = new WeakMap<S16RootReleaseSelector, { prefix: string; uid: number; guard(): void }>();
+/** Requires the original live root capability for this exact installation/ownership boundary. */
+export function assertS16RootReleaseSelectorFor(selector: S16RootReleaseSelector, prefix: string, uid = 0): void {
+  const original = originalSelectors.get(selector);
+  if (!original || original.prefix !== prefix || original.uid !== uid) refuse('s16_root_selector_capability_mismatch');
+  original.guard();
+}
+
 /** Returns before opening any root lease; the caller retains original resources even if acquisition/selection fails. */
 export function openS16RootReleaseSelector(options: S16RootSelectorOptions = {}): S16RootReleaseSelector {
   const prefix = options.prefix ?? '/opt/jit-s15', policy = options.pathPolicy ?? {}, uid = policy.uid ?? 0;
@@ -61,7 +69,7 @@ export function openS16RootReleaseSelector(options: S16RootSelectorOptions = {})
     assertRootTree(directory, policy); const checked = validateArtifact(directory, { runtime: true });
     if (!checked.ok || checked.manifest?.contentHash !== sha256 || checked.manifest.artifactId !== basename(directory)) refuse('s16_root_selector_package_changed');
   };
-  return Object.freeze<S16RootReleaseSelector>({ get released() { return released; }, acquire() {
+  const capability = Object.freeze<S16RootReleaseSelector>({ get released() { return released; }, acquire() {
     if (released || attempted) refuse('s16_root_selector_already_attempted'); attempted = true;
     assertRootPath(prefix, policy); mkdirSync(prefix, { recursive: true, mode: 0o755 }); assertRootPath(prefix, policy); originalPrefix = lstatSync(prefix);
     assertRootPath(coordination, policy); if (!lstatSync(coordination, { throwIfNoEntry: false })) mkdirSync(coordination, { mode: 0o700 });
@@ -89,4 +97,5 @@ export function openS16RootReleaseSelector(options: S16RootSelectorOptions = {})
       finally { busy = false; }
     }
   }, close() { if (released) return; if (busy) refuse('s16_root_selector_busy'); bootstrap?.close(); lease?.close(); released = true; } });
+  originalSelectors.set(capability, { prefix, uid, guard }); return capability;
 }

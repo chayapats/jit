@@ -7,7 +7,7 @@ import { type CommandRunner, spawnRunner } from '../../../src/ops/supervisor';
 import { assertRootPath, assertRootTree, type RootPathPolicy } from '../trusted-paths';
 import { validateArtifact } from '../bun-build';
 import { validateS16GuardedSelectionInput, type S16GuardedSelectionAbort, type S16GuardedSelectionInput, type S16GuardedSelectionPlan, type S16GuardedSelectionReader, type S16GuardedSelectionReceipt } from './s16-guarded-selection';
-import { openS16RootReleaseSelector, s16RootSelectorValue } from './s16-release-selector';
+import { assertS16RootReleaseSelectorFor, openS16RootReleaseSelector, s16RootSelectorValue, type S16RootReleaseSelector } from './s16-release-selector';
 
 const digest = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 function refuse(code = 's16_release_job_refused'): never { throw Error(code); }
@@ -31,6 +31,8 @@ export interface S16ReleaseJobResult {
 /** Trusted composition only; alternate ownership/runner ports are explicit disposable fixture boundaries. */
 export interface S16ReleaseJobOptions {
   service: S16ReleaseService; run?: CommandRunner; pathPolicy?: RootPathPolicy;
+  /** The installer retains exclusion through staging and locator publication; it owns disposal. */
+  selector?: S16RootReleaseSelector;
   after?(boundary: 'stopped' | 'plan' | 'armed' | 'selected' | 'completed' | 'trial' | 'fallback' | 'result'): void;
 }
 /** Retains the original root lease after unknown disposal; close before another qualified installer proceeds. */
@@ -47,8 +49,9 @@ export function openS16ReleaseJob(input: S16ReleaseJobInput, options: S16Release
     [input.operatorDirectory, input.bunPath, input.service.home].some(path => !isAbsolute(path) || resolve(path) !== path || path.length > 4096) || dirname(input.operatorDirectory) !== join(selection.prefix, 'releases')) refuse();
   input = JSON.parse(canonical(input)) as S16ReleaseJobInput;
   selection = input.selection;
-  const root = openS16RootReleaseSelector({ prefix: selection.prefix, ...(options.pathPolicy ? { pathPolicy: options.pathPolicy } : {}) });
-  let released = false, busy = false, acquired = false;
+  const root = options.selector ?? openS16RootReleaseSelector({ prefix: selection.prefix, ...(options.pathPolicy ? { pathPolicy: options.pathPolicy } : {}) });
+  if (options.selector) assertS16RootReleaseSelectorFor(root, selection.prefix, policy.uid ?? 0);
+  let released = false, busy = false, acquired = options.selector !== undefined;
   const inputSha256 = digest(input), directory = join(selection.prefix, '.s16-selector/jobs', digest(selection.requestId));
   const guard = () => { if (released) refuse('s16_release_job_closed'); root.read(); assertRootPath(directory, policy); };
   const after = (at: Parameters<NonNullable<S16ReleaseJobOptions['after']>>[0]) => { guard(); if ((options.after?.(at) as unknown) !== undefined) refuse('s16_release_job_guard_invalid'); guard(); };
@@ -113,7 +116,7 @@ export function openS16ReleaseJob(input: S16ReleaseJobInput, options: S16Release
     after('completed'); return completed;
   };
   const stop = async () => { await service.stop(); await service.assertStopped(); guard(); after('stopped'); };
-  return Object.freeze<S16ReleaseJob>({ get released() { return released; }, close() { if (released) return; if (busy) refuse('s16_release_job_busy'); root.close(); released = true; }, async run() {
+  return Object.freeze<S16ReleaseJob>({ get released() { return released; }, close() { if (released) return; if (busy) refuse('s16_release_job_busy'); if (!options.selector) root.close(); released = true; }, async run() {
     if (released || busy) refuse('s16_release_job_busy'); busy = true;
     try {
       if (!acquired) { root.acquire(); acquired = true; }
@@ -128,6 +131,10 @@ export function openS16ReleaseJob(input: S16ReleaseJobInput, options: S16Release
       if (previous !== undefined) { if (!previous || Object.keys(previous).sort().join(',') !== 'contract,fallback,inputSha256,outcome,selection' || previous.contract !== 's16-release-job-result/v1' || previous.inputSha256 !== inputSha256 || !['selected_healthy', 'fallback_healthy'].includes(previous.outcome)) refuse('s16_release_job_receipt_changed'); return Object.freeze(previous); }
       const aborted = read('fallback-aborted.json') as S16GuardedSelectionAbort | undefined;
       if (aborted !== undefined) { if (!aborted || aborted.contract !== 's16-guarded-release-abort/v1' || aborted.state !== 'not_selected' || !/^[a-f0-9]{64}$/.test(aborted.planSha256)) refuse('s16_release_job_receipt_changed'); refuse('s16_release_job_forward_recovery_required'); }
+      // A stale job cannot stop a later unrelated controller before discovering
+      // its selector conflict in the service-identity helper.
+      const current = root.read().targetDirectory;
+      if (current !== selection.sourceDirectory && !(read('selection-plan.json') !== undefined && current === selection.targetDirectory)) refuse('s16_release_job_current_changed');
       verifyOperator(); await stop();
       const selected = await perform(selection, 'selection'); publish('selection.json', selected);
       const fallbackInput: S16GuardedSelectionInput = { ...selection, requestId: 'release_fallback_' + digest(selection.requestId), sourceDirectory: selection.targetDirectory, sourceSha256: selection.targetSha256, targetDirectory: selection.sourceDirectory, targetSha256: selection.sourceSha256 };

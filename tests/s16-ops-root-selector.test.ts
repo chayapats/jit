@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RELEASE_CONTRACT } from 'schway/host';
 import { buildPackage, installArtifactDependencies, readDependencyRecord, validateArtifact } from '../ops/package/bun-build';
-import { openS16RootReleaseSelector, type S16RootReleaseSelector } from '../ops/package/installer/s16-release-selector';
+import { assertS16RootReleaseSelectorFor, openS16RootReleaseSelector, type S16RootReleaseSelector } from '../ops/package/installer/s16-release-selector';
 import { spawnRunner } from '../src/ops/supervisor';
 import { opsDirectory, opsWrite } from '../src/s14/ops-files';
 
@@ -48,6 +48,17 @@ function fixture(initial = true) {
   const options = { prefix, pathPolicy: { root, uid: process.getuid!() } }, cap = openS16RootReleaseSelector(options); caps.push(cap); cap.acquire();
   return { cap, options, before: cap.read(), current: join(prefix, 'current'), target: packages[1]! };
 }
+
+test('only the original acquired live root capability can be borrowed for its exact prefix and UID', () => {
+  const f = fixture();
+  expect(() => assertS16RootReleaseSelectorFor(f.cap, prefix, process.getuid!())).not.toThrow();
+  expect(() => assertS16RootReleaseSelectorFor({ ...f.cap }, prefix, process.getuid!())).toThrow('s16_root_selector_capability_mismatch');
+  expect(() => assertS16RootReleaseSelectorFor(f.cap, prefix + '-other', process.getuid!())).toThrow('s16_root_selector_capability_mismatch');
+  expect(() => assertS16RootReleaseSelectorFor(f.cap, prefix, process.getuid!() + 1)).toThrow('s16_root_selector_capability_mismatch');
+  const unacquired = openS16RootReleaseSelector(f.options); caps.push(unacquired);
+  expect(() => assertS16RootReleaseSelectorFor(unacquired, prefix, process.getuid!())).toThrow('s16_root_selector_not_acquired');
+  f.cap.close(); expect(() => assertS16RootReleaseSelectorFor(f.cap, prefix, process.getuid!())).toThrow('s16_root_selector_not_acquired');
+});
 
 for (const initial of [false, true]) test(`actual root filesystem selection from existing=${initial} reads back the desired path and retries without touching its inode`, () => {
   const f = fixture(initial), selected = f.cap.select(f.before.sha256, f.target.path, f.target.hash);

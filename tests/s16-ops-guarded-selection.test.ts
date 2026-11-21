@@ -131,6 +131,15 @@ test('a killed pre-admission backup cannot be rebound to later owning FileStore 
 // transition are explicit fixture ports. This does not establish Linux enforcement.
 function fixtureServiceRunner(): CommandRunner { return s16ReleaseFixtureRunner(root, env); }
 
+test('a stale root job refuses an unrelated current executable before stopping any service or admitting an upgrade', async () => {
+  const f = await fixture();
+  f.selector.select(f.selector.read().sha256, incompatible.path, incompatible.hash); f.selector.close();
+  const before = readFileSync(f.controlPath); let stops = 0;
+  const service = { async stop() { stops++; }, async assertStopped() {}, async start() {}, async healthy() { return true; } };
+  const job = openS16ReleaseJob({ selection: f.input, operatorDirectory: packages[1]!.path, bunPath: join(prefix, 'bin/bun'), service: { user: 'jit-fixture', uid: process.getuid!() || 1001, home: root } }, { service, run: fixtureServiceRunner(), pathPolicy: { root, uid: process.getuid!() } }); jobs.push(job);
+  await expect(job.run()).rejects.toThrow('s16_release_job_current_changed'); expect(stops).toBe(0); expect(readFileSync(f.controlPath)).toEqual(before); expect(existsSync(f.fencePath)).toBe(false);
+}, 30000);
+
 for (const trialFailure of [false, true]) test('root job ' + (trialFailure ? 'falls back over fresh current owning file activity' : 'starts the selected package and returns an inert historical result on retry'), async () => {
   const f = await fixture(); f.selector.close(); f.input.requestId = 'root_job_' + crypto.randomUUID().replaceAll('-', '');
   let active = true, stops = 0, starts = 0, laterId: string | undefined;

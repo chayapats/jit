@@ -57,12 +57,25 @@ cutover; compatible release/client lifecycle acceptance remains separate.
 
 The [guarded selection protocol](../contracts/s16-guarded-release-selection-v1.md)
 and [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) implement the
-protected service/root component. The installer/supervisor adapter and actual
-installed lifecycle remain in progress; there is no new standalone public
-upgrade command in this component. The [scoped service/client proof](../evidence/s16-service-release-proof.md)
+protected service/root component. [ADR 0128](../adr/0128-s16-installed-upgrade-with-original-host-binding.md)
+adds an early installed `install.sh --s15` adapter for adopted/explicit selected
+file/file-memory/routine/voice state, retaining the original config, identities
+and unit. There is no new standalone upgrade CLI. Uninstall/reinstall and actual
+Linux enforcement remain separate acceptance. The [scoped service/client proof](../evidence/s16-service-release-proof.md)
 exercises actual copied earlier/current service processes and the same sealed
 shared client with persistent scripted external ports, including fresh work
 after a policy-preserving fallback.
+
+Complete explicit operations adoption before upgrading selected state. Missing
+adoption or original protected state refuses rather than entering the legacy
+composition fallback. Supported packages require the same pinned Bun, public
+engine contract/revision, lock and dependency seal. An old bridge-metadata package
+does not qualify automatically. Preserve original root job/installer metadata and
+resume with the same installed identity/configuration. The original unfinished
+job is processed before a newly requested source. A completed failed trial is
+reported as target installation failure with healthy compatible fallback over
+current data. Do not remove the gate or restore an earlier composition manifest.
+The S15 dry-run simulator refuses this path; use the guarded installer suites.
 
 The trusted root coordinator keeps a retained sealed operator, original private
 job plans and root process exclusion. It stops the controller conclusively,

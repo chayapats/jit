@@ -1,7 +1,7 @@
 # s16-guarded-release-selection/v1
 
-Status: protected protocol/root coordinator component. Installer routing,
-installed lifecycle and actual Linux adoption remain separate conformance.
+Status: protected protocol/root coordinator and installed upgrade adapter.
+Uninstall/reinstall and actual Linux adoption remain separate conformance.
 See [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md).
 
 The root installer owns immutable packages, units, private job metadata and the
@@ -56,12 +56,16 @@ the service only after the helper conclusively releases its original context.
 Unknown disposal retains original capabilities while alive and leaves the durable
 admission gate in place. No original model/VM/effect is retried or settled here.
 
-`openS16ReleaseJob` owns root exclusion, private original input/plans and historical
+`openS16ReleaseJob` owns or genuinely borrows root exclusion, private original input/plans and historical
 results. Fixed root jobs allow at most 256 retained jobs and 64 metadata objects
 per job; individual records are at most 64 KiB. Atomic publication never replaces
 an unexpected object; inert crash temporaries are not adopted. Terminal job retry
 returns its original result without stopping a later service or changing state
 or selector. It reports historical health, not a new liveness observation.
+Only the original live selector capability for the exact prefix/root UID can be
+borrowed. A structural clone, unacquired, closed or differently scoped object
+refuses. The installer owns final disposal. A nonterminal stale job refuses an
+unrelated current executable before stopping its service.
 
 Failed/unknown trial start or health requires a conclusive stop and a **new reverse
 selection** over a fresh complete current backup. Actual older readers and terminal
@@ -86,5 +90,46 @@ live accounts, Linux isolation or owner-host cutover.
 The separate [owning lifecycle proof](../evidence/s16-service-release-proof.md)
 uses actual earlier/current service processes and a sealed shared client with
 persistent scripted external ports. It covers current trial policy/withdrawal/
-private/unknown state and fresh work after compatible fallback. Installed systemd
-routing, rendered clients and real-host/device acceptance remain separate.
+private/unknown state and fresh work after compatible fallback. Rendered clients
+and real-host/device acceptance remain separate.
+
+## Installed upgrade adapter
+
+[ADR 0128](../adr/0128-s16-installed-upgrade-with-original-host-binding.md)
+routes existing operations or explicit file/file-memory/routine/voice state
+before legacy installer identity/configuration/credential/unit changes. Missing
+adoption refuses; no legacy manifest fallback is attempted. Default S15 and
+explicit legacy contracts remain separate. The dry-run S15 simulator refuses
+this path rather than manufacturing evidence from dummy packages.
+
+`openS16InstalledUpgrade` returns before opening root resources. Its original
+capability owns selector exclusion through trusted staging, locked dependency
+installation, freezing into new root inodes, package publication and the release
+job. Protected config/unit/Bun/state/identity guards surround supervisor effects.
+No account creation, UID refresh, owner-link preparation, VM start/stop or current
+composition rewrite occurs. New artifacts declare the actual public Schway
+release contract. The initial compatible route requires the same pinned Bun,
+engine, dependency seal and lock; unsupported earlier packages refuse.
+
+A bounded private atomic `installer.json` locator retains original job inputs
+separately from immutable per-job plans. Resume that job before processing a new
+source. An interrupted failed trial reports its original compatible fallback
+first. Another invocation may create a distinct attempt. Corrupt/missing original
+job evidence is never reconstructed. Exact artifact requests retain their full
+content pin; raw-source no-op comparison ignores only build ID/time, never files,
+metadata, modes, runtime or lock. A no-op creates no operation/health receipt.
+
+The manager port uses fixed absolute getent/systemctl argv and clean environment.
+Require the original non-login user/home/UID/GID and local VMM account; retain
+config/unit bytes and inodes, Bun metadata and state directory identity. Manager
+readback requires the original fragment, no drop-ins or pending daemon reload,
+exact user/group and all explicit state/PID/job fields. Unknown/queued/running
+control state refuses. Stop requires inactive/failed, dead/failed substate and
+literal zero main/control PIDs. Start requires active/running with a real PID.
+Bounded loopback login readiness preserves the configured Host and verifies the
+same active PID before and after HTTP; a response alone is insufficient.
+
+Tests use scripted account/manager/HTTP ports with actual sealed old/current
+helper processes and root filesystem exclusion/publication. This proves adapter
+composition, original locator resume and compatible fallback, not real systemd,
+distinct Linux identities, uninstall/reinstall or physical settlement.
