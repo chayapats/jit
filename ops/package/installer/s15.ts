@@ -18,6 +18,7 @@ import { en } from "../../../src/i18n/en";
 import { th } from "../../../src/i18n/th";
 import { RELEASE_CONTRACT } from "schway/host";
 import { openS16InstalledUpgrade } from "./s16-installed-upgrade";
+import { openS16InstalledWiring } from "./s16-installed-wiring";
 
 const MiB = 1024 ** 2;
 
@@ -241,7 +242,8 @@ export async function stopS15WorkingVms(input: { vmmUid: number; call(argv: stri
   const p = s15Installation, asVmm = (args: string[]) => ["runuser", "-u", p.vmmUser, "--", "env", `XDG_RUNTIME_DIR=/run/user/${input.vmmUid}`, ...args];
   const remaining: string[] = [];
   let commands = true;
-  const manager = (await input.call(["systemctl", "is-active", `user@${input.vmmUid}.service`], 30_000)).stdout.trim();
+  const managerResult = await input.call(["systemctl", "is-active", `user@${input.vmmUid}.service`], 30_000), manager = managerResult.stdout.trim();
+  if (managerResult.timedOut || !["active", "activating", "reloading", "deactivating", "inactive", "failed"].includes(manager)) commands = false;
   if (["active", "activating", "reloading", "deactivating"].includes(manager)) {
     const stop = await input.call(asVmm(["systemctl", "--user", "stop", "jit-work-*.service"]), 120_000);
     if (stop.exitCode !== 0 || stop.timedOut) commands = false;
@@ -407,8 +409,30 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     }
     return false;
   };
+  const selectedS16 = (configured: S15RuntimeConfig | null) => lstatSync(join(paths.state, "operations"), { throwIfNoEntry: false }) !== undefined ||
+    configured?.files !== undefined || configured?.fileMemory !== undefined || configured?.routines === true || configured?.voice !== undefined;
+  const stopSelectedWorkingVms = async (configured: S15RuntimeConfig) => {
+    const result = await call(["/usr/bin/getent", "passwd", p.vmmUser], 30_000);
+    if (result.exitCode === 2 && !configured.vm.local && !result.timedOut) return;
+    const fields = result.stdout.trim().split(":"), id = Number(fields[2]);
+    if (result.exitCode !== 0 || result.timedOut || fields.length !== 7 || fields[0] !== p.vmmUser || fields[5] !== p.vmmHome || !["/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false"].includes(fields[6]!) || !Number.isSafeInteger(id) || id < 1 || configured.vm.local && id !== configured.vm.vmm?.uid) throw new InstallerFailure(currentStep, "preserve original VMM identity and config; unknown identity/stop state refuses wiring removal");
+    const stopped = await stopS15WorkingVms({ vmmUid: id, call });
+    if (!stopped.stopped) throw new InstallerFailure(currentStep, "prove every Jit-managed working VM stopped through its original manager/kernel identity, then resume the same uninstall; all wiring and retained data stay in place until proof");
+  };
   try {
     if (options.uninstall) {
+      const raw = read(paths.config); let configured: S15RuntimeConfig | null = null;
+      try { if (raw !== null) configured = parseS15RuntimeConfig(JSON.parse(raw)); } catch { /* Refuse unknown existing state below. */ }
+      if (stateIdentity() && !configured) throw new InstallerFailure("preflight", "preserve current state and diagnose missing/corrupt S15 configuration before uninstalling");
+      if (selectedS16(configured)) {
+        step("s16-guarded-uninstall", "preserve original config/state/identity and root wiring receipts; reconcile the same selected uninstall before retrying");
+        if (dry) throw new InstallerFailure(currentStep, "the dry-run S15 simulator cannot certify adopted S16 uninstall; use disposable installed-wiring conformance");
+        const wiring = openS16InstalledWiring("remove", options.bunPath, { run, stopWorkingVms: stopSelectedWorkingVms, ...(options.sleep ? { sleep: options.sleep } : {}) });
+        try {
+          const result = await wiring.run(); out("Removed the selected controller wiring. Current state, configuration, identities, credential-service unit/keyring, packages, receipts and working disks remain in place.");
+          return { events, config: null, computer: null, release: result.release, rolledBack: false };
+        } finally { wiring.close(); }
+      }
       step("uninstall", `stop ${p.service} with systemctl, then re-run install.sh --s15 --uninstall`);
       if (!dry && existsSync(paths.unit)) {
         await call(["systemctl", "disable", "--now", p.service]);
@@ -454,11 +478,12 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     } else if ([paths.unit, paths.current, paths.installerState].some(path => lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw stateFailure();
     // Selected file/routine/voice formats and every adopted/partially retained
     // operations installation must never enter the legacy composition rollback.
-    const guarded = originalState && (lstatSync(join(paths.state, "operations"), { throwIfNoEntry: false }) !== undefined ||
-      preserved?.files !== undefined || preserved?.fileMemory !== undefined || preserved?.routines === true || preserved?.voice !== undefined);
+    const guarded = originalState && selectedS16(preserved);
     if (guarded) {
       step("s16-guarded-upgrade", "preserve the original config, state, service identity and unit; finish explicit operations adoption if missing, then resume this installer with its retained job. Do not restore an old composition manifest");
       if (dry) throw new InstallerFailure(currentStep, "the dry-run S15 simulator cannot certify an adopted S16 upgrade; use the disposable guarded installer conformance suite");
+      const wiring = openS16InstalledWiring("restore", options.bunPath, { run, stopWorkingVms: stopSelectedWorkingVms, ...(options.sleep ? { sleep: options.sleep } : {}) });
+      try { await wiring.run(); } finally { wiring.close(); }
       const upgrade = openS16InstalledUpgrade({ source: resolve(options.source), installation: { configPath: p.config, state: p.state, unitPath: p.unit, unit: p.service, prefix: p.prefix, home: p.home, user: p.user, bunPath: options.bunPath } }, { run, ...(options.sleep ? { sleep: options.sleep } : {}) });
       try {
         const result = await upgrade.run();

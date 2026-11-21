@@ -48,6 +48,13 @@ test.each(['selected_files', 'retained_operations', 'selected_routines'] as cons
   const before = tree(f, s15Trees);
   await expect(install(f, { release: 'release-b' })).rejects.toMatchObject({ step: 's16-guarded-upgrade' });
   expect(tree(f, s15Trees)).toEqual(before); expect(f.lines.at(-1)).toBe('Step: s16-guarded-upgrade');
+  await expect(install(f, {}, { uninstall: true })).rejects.toMatchObject({ step: 's16-guarded-uninstall' });
+  expect(tree(f, s15Trees)).toEqual(before);
+});
+
+test('unknown VMM manager state is not proof that working VMs stopped', async () => {
+  const result = await stopS15WorkingVms({ vmmUid: 1002, async call() { return { exitCode: 1, timedOut: false, stdout: 'unknown\n' }; }, qemuProcesses: () => [] });
+  expect(result.stopped).toBe(false);
 });
 
 test("a fresh S15 install creates the separate installation, its QEMU identity boundary and a credential-free config", async () => {

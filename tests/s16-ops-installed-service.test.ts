@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bindS16InstalledService } from '../ops/package/installer/s16-installed-service';
 import type { CommandRunner } from '../src/ops/supervisor';
 import { s15StageConfig } from '../ops/evidence/s15-stage';
+import { openS16RootReleaseSelector } from '../ops/package/installer/s16-release-selector';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,13 +17,13 @@ function fixture() {
   writeFileSync(configPath, JSON.stringify(s15StageConfig(state, 'http://localhost:3041')), { mode: 0o600 });
   writeFileSync(unitPath, `[Service]\nUser=jit-fixture\nGroup=jit-fixture\nExecStart=${bunPath} ${prefix}/current/src/main.ts serve --s15 --config ${configPath}\n`, { mode: 0o644 });
   let passwd = `jit-fixture:x:${process.getuid!()}:${process.getgid!()}:${''}:${home}:/usr/sbin/nologin`;
-  const observed: Record<string, string> = { LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead', MainPID: '0', ControlPID: '0', Job: '', FragmentPath: unitPath, DropInPaths: '', NeedDaemonReload: 'no', User: 'jit-fixture', Group: 'jit-fixture' };
+  const observed: Record<string, string> = { LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead', MainPID: '0', ControlPID: '0', Job: '', FragmentPath: unitPath, DropInPaths: '', NeedDaemonReload: 'no', User: 'jit-fixture', Group: 'jit-fixture', KillMode: 'mixed', SendSIGKILL: 'yes' };
   const commands: string[][] = []; let healthy = true, httpCalls = 0;
   const run: CommandRunner = async argv => {
     commands.push(argv);
     if (argv[0] === '/usr/bin/getent') return { exitCode: 0, timedOut: false, stdout: passwd + '\n' };
     if (argv[0] !== '/usr/bin/systemctl' || argv[2] !== 'jit-s15.service') throw Error('unexpected_fixture_command');
-    if (argv[1] === 'show') return { exitCode: 0, timedOut: false, stdout: Object.entries(observed).map(([key, value]) => `${key}=${value}\n`).join('') };
+    if (argv[1] === 'show') return { exitCode: 0, timedOut: false, stdout: argv[3]!.slice('--property='.length).split(',').map(key => `${key}=${observed[key]}\n`).join('') };
     if (argv[1] === 'start') Object.assign(observed, { ActiveState: 'active', SubState: 'running', MainPID: '741' });
     else if (argv[1] === 'stop') Object.assign(observed, { ActiveState: 'inactive', SubState: 'dead', MainPID: '0' });
     else throw Error('unexpected_fixture_effect');
@@ -46,6 +47,7 @@ test('installed manager adapter proves original stop and process-stable loopback
 test.each([
   ['MainPID', '81'], ['MainPID', ''], ['ControlPID', '17'], ['Job', '42'], ['LoadState', 'not-found'], ['SubState', 'stop-sigterm'],
   ['DropInPaths', '/etc/systemd/system/jit-s15.service.d/override.conf'], ['NeedDaemonReload', 'yes'], ['User', 'someone-else'], ['FragmentPath', '/another.service'],
+  ['KillMode', 'process'], ['SendSIGKILL', 'no'],
 ] as const)('installed manager refuses unknown or unsettled %s=%s before start', async (key, value) => {
   const f = fixture(), cap = await bindS16InstalledService(f.input, f.options); f.observed[key] = value;
   await expect(cap.start()).rejects.toThrow(); expect(f.commands.some(argv => argv[1] === 'start')).toBe(false); expect(f.httpCalls()).toBe(0);
@@ -83,4 +85,17 @@ test('missing and duplicate manager fields and successful HTTP with no live PID 
   f.observed.MainPID = '0'; f.observed.ActiveState = 'active'; f.observed.SubState = 'running'; expect(await cap.healthy()).toBe(false); expect(f.httpCalls()).toBe(0);
   const duplicate = await bindS16InstalledService(f.input, { ...f.options, run: async (argv, options) => { const result = await f.options.run(argv, options); return argv[1] === 'show' ? { ...result, stdout: result.stdout + 'Job=\n' } : result; } });
   await expect(duplicate.assertStopped()).rejects.toThrow('s16_installed_service_state_unknown');
+});
+
+test('only genuine held root exclusion and original unit bytes permit retained missing-unit stop recovery', async () => {
+  const f = fixture(), bytes = readFileSync(f.input.unitPath), root = openS16RootReleaseSelector({ prefix: f.input.prefix, pathPolicy: f.options.pathPolicy }); root.acquire();
+  try {
+    unlinkSync(f.input.unitPath);
+    await expect(bindS16InstalledService(f.input, f.options)).rejects.toThrow('s16_installed_service_unit_changed');
+    await expect(bindS16InstalledService(f.input, { ...f.options, retainedUnit: { bytes, selector: { ...root } } })).rejects.toThrow('s16_root_selector_capability_mismatch');
+    const cap = await bindS16InstalledService(f.input, { ...f.options, retainedUnit: { bytes, selector: root } });
+    f.observed.LoadState = 'not-found'; await cap.stopRetained(); await cap.assertStoppedRetained();
+    f.observed.MainPID = '81'; await expect(cap.assertStoppedRetained()).rejects.toThrow('s16_installed_service_not_stopped');
+    root.close(); await expect(cap.assertRetained()).rejects.toThrow('s16_root_selector_not_acquired');
+  } finally { root.close(); }
 });

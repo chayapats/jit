@@ -60,8 +60,11 @@ and [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) implement 
 protected service/root component. [ADR 0128](../adr/0128-s16-installed-upgrade-with-original-host-binding.md)
 adds an early installed `install.sh --s15` adapter for adopted/explicit selected
 file/file-memory/routine/voice state, retaining the original config, identities
-and unit. There is no new standalone upgrade CLI. Uninstall/reinstall and actual
-Linux enforcement remain separate acceptance. The [scoped service/client proof](../evidence/s16-service-release-proof.md)
+and unit. [ADR 0129](../adr/0129-s16-retained-installed-wiring.md) and the
+[installed wiring contract](../contracts/s16-installed-wiring-v1.md) add original
+uninstall/reinstall routing. There is no new standalone upgrade CLI. Aggregate
+owning-client lifecycle and actual Linux enforcement remain separate acceptance.
+The [scoped service/client proof](../evidence/s16-service-release-proof.md)
 exercises actual copied earlier/current service processes and the same sealed
 shared client with persistent scripted external ports, including fresh work
 after a policy-preserving fallback.
@@ -76,6 +79,26 @@ job is processed before a newly requested source. A completed failed trial is
 reported as target installation failure with healthy compatible fallback over
 current data. Do not remove the gate or restore an earlier composition manifest.
 The S15 dry-run simulator refuses this path; use the guarded installer suites.
+
+`install.sh --s15 --uninstall` uses the selected artifact's actual wiring helper,
+original root jobs and current control, proves controller/working-VM stop and
+removes only the root-owned controller/journal/proxy units. It retains current
+SQL/native/payloads, accounts, config, credential-service unit/keyring, packages,
+receipts and disks. The credential service's original enablement and active
+state are privately receipted and restored separately. Missing/unknown original
+identity, manager state or custody refuses before deleting wiring. An earlier
+selected package without the helper must first use the compatible upgrade;
+uninstall never upgrades code silently.
+
+Re-run `install.sh --s15` to reconcile the original uninstall and restore exact
+original wiring/activation before boot and any requested package upgrade.
+Restoration requires both protected root bytes and the independently confirmed
+original uninstall in current control. Keep `.s16-selector` current metadata;
+never delete its job/locator files or a controller fence to force admission.
+Missing receipts or different occupied units refuse without reconstruction or
+overwrite. Historical points/ordinary exports cannot grant root unit authority.
+Fresh-selected installation and final owning-client aggregate acceptance remain
+explicitly pending; deterministic adapter tests are not Linux/device/live proof.
 
 The trusted root coordinator keeps a retained sealed operator, original private
 job plans and root process exclusion. It stops the controller conclusively,

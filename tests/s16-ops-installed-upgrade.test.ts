@@ -62,7 +62,7 @@ async function fixture(failTrial = false) {
     if (argv[0] === '/usr/bin/getent') return { exitCode: 0, timedOut: false, stdout: `jit-fixture:x:${process.getuid!()}:${process.getgid!()}::${home}:/usr/sbin/nologin\n` };
     if (argv[0] !== '/usr/bin/systemctl') return helper(argv, settings);
     if (argv[2] !== 'jit-s15.service') throw Error('fixture_unexpected_unit');
-    if (argv[1] === 'show') return { exitCode: 0, timedOut: false, stdout: Object.entries({ LoadState: 'loaded', ...observed, ControlPID: '0', Job: '', FragmentPath: unitPath, DropInPaths: '', NeedDaemonReload: 'no', User: 'jit-fixture', Group: 'jit-fixture' }).map(([k, v]) => `${k}=${v}\n`).join('') };
+    if (argv[1] === 'show') return { exitCode: 0, timedOut: false, stdout: Object.entries({ LoadState: 'loaded', ...observed, ControlPID: '0', Job: '', FragmentPath: unitPath, DropInPaths: '', NeedDaemonReload: 'no', User: 'jit-fixture', Group: 'jit-fixture', KillMode: 'mixed', SendSIGKILL: 'yes' }).map(([k, v]) => `${k}=${v}\n`).join('') };
     effects.push(argv[1]!);
     if (argv[1] === 'stop') Object.assign(observed, { ActiveState: 'inactive', SubState: 'dead', MainPID: '0' });
     else if (argv[1] === 'start') Object.assign(observed, { ActiveState: 'active', SubState: 'running', MainPID: String(742 + effects.length) });
