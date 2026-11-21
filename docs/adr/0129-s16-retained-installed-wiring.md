@@ -25,8 +25,9 @@ Root privately retains bounded original wiring bytes and independent config,
 identity/package/state pins before removal. Only the original root-owned
 controller unit, journald and proxy socket are eligible. The credential service's
 unit remains unchanged under its original user-owned home: root never traverses
-service-writable directories to unlink/replace it. Disable/restore its user-manager
-activation separately through the fixed original identity. This narrower choice
+service-writable directories to unlink/replace it. Stop/restore its user-manager
+process separately through the fixed original identity, preserving local and
+global enablement. This narrower choice
 preserves credential scaffolding like accounts and linger, avoiding temporary
 ownership changes to the protected home. Its exact wiring hash remains in the
 current continuity proof. No archive or caller can
