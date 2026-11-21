@@ -29,6 +29,7 @@ import { abortS16Backup, type S16BackupAbortOptions, type S16BackupAbortResult }
 import type { S16OperationsRequest } from './operations-state';
 import { openS16PointCapture, type S16PointCaptureMaintenance, type S16PointCaptureOptions } from './point-capture';
 import { captureS16CurrentPayloadReferences, type S16CurrentPayloadReferenceObservation } from './current-payload-references';
+import { assertS16LedgerWriteCutFor, openS16LedgerWriteCut, type S16LedgerWriteCut } from './ledger-write-cut';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -74,7 +75,9 @@ export interface S16ControlMaintenance {
   /** Complete known FILE/parser byte custody, retaining pending and untrusted roles without boot recovery. */
   fileCustody(): S16FileObservation;
   /** Current SQL pins even when payload bytes are missing; no complete cohort or restore authority. */
-  currentPayloadReferences(): S16CurrentPayloadReferenceObservation;
+  currentPayloadReferences(cut?: S16LedgerWriteCut): S16CurrentPayloadReferenceObservation;
+  /** Actual writer reservations for the complete current SQL set; no actor or activation authority. */
+  currentLedgerCut(): S16LedgerWriteCut;
   /** Complete current GitHub bundle bytes/references, without recovery, Git, credentials or publication. */
   githubArtifacts(): S16GithubArtifactObservation;
   /** Current backend/client/credential metadata; no secret/profile/disk copy or physical settlement. */
@@ -112,6 +115,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const nativeSets = new Set<S16NativeSetMaintenance>();
   const pointCaptures = new Set<S16PointCaptureMaintenance>();
+  const ledgerCuts = new Set<S16LedgerWriteCut>();
   let helperReads = 0;
   const retireDataSources = () => {
     if (retired) return;
@@ -124,6 +128,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   const close = () => {
     if (closed) return; usable = false;
     if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    for (const cut of ledgerCuts) cut.close();
     // A retirement attempt never releases auxiliary process locks while any original source close is unknown.
     if (retiring) retireDataSources();
     firecracker?.close();
@@ -208,7 +213,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       unlinkSync(path); opsSyncDirectory(dirname(path)); expectedFence = undefined; assertCurrent();
     };
     const assertCaptureReleased = () => {
-      assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+      assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released) || [...ledgerCuts].some(cut => !cut.released)) refuse('s16_ops_source_release_unknown');
     };
     const assertExclusion = () => {
       if (closed || !retired) refuse('s16_ops_sources_not_retired');
@@ -263,7 +268,14 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const githubArtifacts = () => captureS16GithubArtifacts({ directory: root, installationId: config.installationId, lease, source: heldRuntime.sources.find(source => source.name === 'github.sqlite'), disclosure: heldRuntime.sources.find(source => source.name === 'disclosure.sqlite'), guard: assertCurrent });
     const fileCustody = () => captureS16FileCohort({ directory: root, installationId: config.installationId, lease,
       source: heldRuntime.sources.find(source => source.name === 'files.sqlite'), configuredGeneration: typeof config.files === 'object' ? config.files.parserImage : null, guard: assertCurrent });
-    const currentPayloadReferences = () => captureS16CurrentPayloadReferences({ directory: root, installationId: config.installationId, lease, sources: heldRuntime.sources, guard: assertCurrent });
+    const currentPayloadReferences = (cut?: S16LedgerWriteCut) => {
+      if (cut) assertS16LedgerWriteCutFor(cut, sources);
+      return captureS16CurrentPayloadReferences({ directory: root, installationId: config.installationId, lease, sources: heldRuntime.sources, guard: assertCurrent, ...(cut ? { cut } : {}) });
+    };
+    const currentLedgerCut = () => {
+      assertCaptureReleased(); for (const cut of ledgerCuts) ledgerCuts.delete(cut);
+      return openS16LedgerWriteCut({ sources, guard: assertCurrent, retain(cut) { ledgerCuts.add(cut); } });
+    };
     const helperCustody = (helperOptions: S16HelperCohortOptions = {}) => {
       assertCurrent();
       return captureS16HelperCohort({ ...helperOptions, directory: root, lease, installationId: config.installationId, controllers,
@@ -280,7 +292,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     };
     const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
     const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, currentLedgerCut, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

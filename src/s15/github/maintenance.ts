@@ -8,6 +8,7 @@ import { digest as policyDigest, ref as policyRef } from '../policy/validation';
 import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from '../../s16/operations/installation-lease';
 import type { S16LedgerSource } from '../../s16/operations/ledger-set';
 import { verifyS16PayloadSources, type S16PayloadSource } from '../../s16/operations/payload-set';
+import { assertS16LedgerWriteCutFor, type S16LedgerWriteCut } from '../../s16/operations/ledger-write-cut';
 
 type Correlation = Readonly<{ table: 'records' | 'receipts' | 'disclosure'; kind: string; rowId: string; slot: string; state: string | null }>;
 /** Current hash-addressed byte custody only; references never grant publication, recipient or effect authority. */
@@ -17,7 +18,7 @@ export interface S16GithubArtifactCohort {
 }
 /** Protected current composition owns the source, namespace and exclusion; archives supply none of these. */
 export interface S16GithubArtifactOptions {
-  directory: string; installationId: string; lease: S16InstallationLease; source: S16LedgerSource | undefined; disclosure: S16LedgerSource | undefined; guard(): void;
+  directory: string; installationId: string; lease: S16InstallationLease; source: S16LedgerSource | undefined; disclosure: S16LedgerSource | undefined; guard(): void; cut?: S16LedgerWriteCut;
 }
 /** Original current byte/reference cut with host-only descriptors and live revalidation. */
 export interface S16GithubArtifactObservation {
@@ -156,7 +157,8 @@ export function readS16GithubCurrentReferences(options: S16GithubArtifactOptions
   const guard = () => {
     assertS16ExclusiveInstallationLease(lease, directory);
     if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid');
-    if (source?.database.inTransaction || disclosure?.database.inTransaction) refuse('s16_ops_sources_busy');
+    if (options.cut) assertS16LedgerWriteCutFor(options.cut, [source, disclosure].filter((row): row is S16LedgerSource => row !== undefined), { subset: true });
+    else if (source?.database.inTransaction || disclosure?.database.inTransaction) refuse('s16_ops_sources_busy');
   }; guard();
   const entries = new Map<string, BigIntStats | null>();
   const entry: Entry = (path, dir = false, optional = false) => {

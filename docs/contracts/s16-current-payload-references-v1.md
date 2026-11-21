@@ -9,7 +9,10 @@ retains the full forward recovery obligations.
 The actual current-control capability exposes `currentPayloadReferences()` while
 its original installation, CHAT and controller exclusion and current owner/config
 guards remain live. Trusted composition supplies the actual selected/retained
-FILE, GitHub and DATA15 readers. Existing source transactions refuse. No ordinary
+FILE, GitHub and DATA15 readers. Existing source transactions refuse unless the
+parent supplies its [original complete live writer cut](s16-ledger-write-cut-v1.md),
+authenticated against every exact current handle. Forged, partial and released
+cuts refuse; a cut-scoped observation expires when that cut releases. No ordinary
 client, model, HTTP or CLI entry point accepts paths, source handles or a catalog
 as authority. Retirement or close invalidates the original observation.
 

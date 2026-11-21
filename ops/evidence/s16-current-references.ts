@@ -31,7 +31,7 @@ export async function verifyS16CurrentReferencesPackage(input: { receipt: string
     requireOutcome(validateArtifact(artifact).ok && readDependencyRecord(artifact)?.dependencyHash === dependencies.dependencyHash, 'references_artifact_validation_failed');
     requireOutcome(['LICENSE', 'NOTICE', 'third_party'].every(path => existsSync(join(artifact, path))), 'references_notices_missing');
     mkdirSync(join(harness, 'tests'), { recursive: true, mode: 0o700 }); cpSync(join(source, 'tests/fixtures'), join(harness, 'tests/fixtures'), { recursive: true });
-    const suites = ['tests/s16-ops-file-payloads.test.ts', 'tests/s16-ops-file-cohort.test.ts', 'tests/s16-ops-github-artifacts.test.ts', 'tests/s16-ops-control-maintenance.test.ts'];
+    const suites = ['tests/s16-ops-file-payloads.test.ts', 'tests/s16-ops-file-cohort.test.ts', 'tests/s16-ops-github-artifacts.test.ts', 'tests/s16-ops-control-maintenance.test.ts', 'tests/s16-ops-ledger-write-cut.test.ts'];
     for (const path of suites) cpSync(join(source, path), join(harness, path));
     const stageFixture = 'ops/evidence/s15-stage.ts'; mkdirSync(join(harness, 'ops/evidence'), { recursive: true, mode: 0o700 }); cpSync(join(source, stageFixture), join(harness, stageFixture));
     const fixtureHashes = [...files(join(harness, 'tests')).map(path => ({ path: 'tests/' + path, sha256: hash(readFileSync(join(harness, 'tests', path))) })), { path: stageFixture, sha256: hash(readFileSync(join(harness, stageFixture))) }];
@@ -41,12 +41,12 @@ export async function verifyS16CurrentReferencesPackage(input: { receipt: string
     const tested = await spawnRunner([process.execPath, '-e', launcher], { cwd: harness, env: { ...env, ...(process.env.JIT_TEST_PYTHON ? { JIT_TEST_PYTHON: process.env.JIT_TEST_PYTHON } : {}) }, timeoutMs: 180_000 });
     const log = tested.stdout; opsWrite(input.receipt + '.tests.log', log);
     const counts = /\n\s*(\d+) pass\n\s*(\d+) fail\n\s*(\d+) expect\(\) calls/.exec(log);
-    requireOutcome(!tested.timedOut && tested.exitCode === 0 && counts && Number(counts[1]) >= 89 && Number(counts[2]) === 0, 'packaged_current_references_cases_failed');
+    requireOutcome(!tested.timedOut && tested.exitCode === 0 && counts && Number(counts[1]) >= 98 && Number(counts[2]) === 0, 'packaged_current_references_cases_failed');
     requireOutcome(validateArtifact(artifact).ok && readDependencyRecord(artifact)?.dependencyHash === dependencies.dependencyHash, 'references_artifact_changed_during_tests');
     const receipt = { contract: 's16-current-references-package-evidence/v1', basis: 'protocol_fixture', sourceCommit: revision.stdout.trim(), sourceState: 'clean',
       packageContentHash: manifest.contentHash, lockHash: manifest.lockHash, dependencyHash: dependencies.dependencyHash, dependencyFiles: dependencies.dependencyFiles,
       platform: process.platform, arch: process.arch, bunVersion: Bun.version, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
-      referencesContract: 's16-current-payload-references/v1', tests: { pass: Number(counts![1]), fail: 0, assertions: Number(counts![3]), logSha256: hash(log) }, fixtureHashes,
+      referencesContract: 's16-current-payload-references/v1', writerCutContract: 's16-ledger-write-cut/v1', tests: { pass: Number(counts![1]), fail: 0, assertions: Number(counts![3]), logSha256: hash(log) }, fixtureHashes,
       driverSha256: hash(readFileSync(import.meta.path)), notices: 'present', artifactAfter: 'verified_unchanged',
       coverage: ['actual_current_control_exclusion', 'owning_client_upload_artifact_withdrawal', 'actual_git_bundle_writer', 'missing_payload_namespace_and_bytes', 'original_pending_parser_sigkill', 'data15_prepublication_references', 'wal_only_reference_and_withdrawal_fences', 'complete_custody_still_refuses', 'unchanged_current_sql_unknown_effects', 'retired_capability_refused'],
       liveProviderCalls: 0, liveAccounts: false, forwardActivation: 'not_exercised', nativeDevices: 'not_exercised', ownerHostCutover: 'not_exercised', aggregateOperations: 'incomplete' };

@@ -160,6 +160,16 @@ test('current DATA15 alone keeps its original pre-publication bundle pin when by
   expect(() => f.context.githubArtifacts()).toThrow('s16_ops_github_missing');
 });
 
+test('actual current GitHub and DATA15 pins can be read only through their original complete owning writer cut', async () => {
+  const f = await fixture(true), before = f.context.currentPayloadReferences(), cut = f.context.currentLedgerCut();
+  try {
+    const pinned = f.context.currentPayloadReferences(cut); expect(pinned.value).toEqual(before.value); pinned.assertCurrent();
+    f.db.exec("UPDATE records SET json=json_set(json,'$.state','reconcile_only') WHERE kind='selection'");
+    expect(() => pinned.assertCurrent()).toThrow('s16_ops_source_cut_changed');
+  } finally { cut.close(); }
+  expect(f.context.currentPayloadReferences().value).toEqual(before.value);
+});
+
 test('original current reference observation rereads a WAL-only change and never retains a stale SQL snapshot', async () => {
   const f = await fixture(); f.db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0'); f.reopen();
   const mode = f.db.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()!.journal_mode;

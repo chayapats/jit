@@ -8,6 +8,7 @@ import { readS16GithubCurrentReferences, type S16GithubCurrentReferences } from 
 import { fileExpectedPayloads, type FileExpectedPayloads } from '../files/maintenance';
 import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from './installation-lease';
 import type { S16LedgerSource } from './ledger-set';
+import { assertS16LedgerWriteCutFor, type S16LedgerWriteCut } from './ledger-write-cut';
 
 /** Current metadata pins only. This catalog is neither a full current cohort nor activation authority. */
 export interface S16CurrentPayloadReferences {
@@ -16,7 +17,7 @@ export interface S16CurrentPayloadReferences {
 }
 /** Protected composition supplies the actual current readers and genuine retained installation exclusion. */
 export interface S16CurrentPayloadReferenceOptions {
-  directory: string; installationId: string; lease: S16InstallationLease; sources: readonly S16LedgerSource[]; guard(): void;
+  directory: string; installationId: string; lease: S16InstallationLease; sources: readonly S16LedgerSource[]; guard(): void; cut?: S16LedgerWriteCut;
 }
 /** Original current reference projection. Revalidation rereads SQL even when only a WAL changed. */
 export interface S16CurrentPayloadReferenceObservation {
@@ -44,7 +45,8 @@ export function captureS16CurrentPayloadReferences(options: S16CurrentPayloadRef
   const guard = () => {
     assertS16ExclusiveInstallationLease(lease, directory);
     if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid');
-    if ([file, github, disclosure].some(source => source?.database.inTransaction)) refuse('s16_ops_sources_busy');
+    if (options.cut) assertS16LedgerWriteCutFor(options.cut, options.sources, { subset: true });
+    else if ([file, github, disclosure].some(source => source?.database.inTransaction)) refuse('s16_ops_sources_busy');
   }; guard();
   const collect = () => {
     guard(); const entries = new Map<string, BigIntStats | null>();
@@ -58,7 +60,7 @@ export function captureS16CurrentPayloadReferences(options: S16CurrentPayloadRef
     if (file && file.reader.applicationId !== 0x4a495446) refuse();
     const value: S16CurrentPayloadReferences = Object.freeze({ contract: 's16-current-payload-references/v1', installationId,
       file: file ? fileExpectedPayloads(file.database, installationId, guard) : null,
-      github: readS16GithubCurrentReferences({ directory, installationId, lease, source: github, disclosure, guard }) });
+      github: readS16GithubCurrentReferences({ directory, installationId, lease, source: github, disclosure, guard, ...(options.cut ? { cut: options.cut } : {}) }) });
     encode(value);
     const check = () => {
       guard();

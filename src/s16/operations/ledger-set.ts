@@ -7,6 +7,7 @@ import { opsPath, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
 import { observeS16LedgerImage, validateS16LedgerReader, type S16LedgerImage } from './ledger-image';
 import { verifyS16PayloadSources } from './payload-set';
+import { openS16LedgerWriteCut, type S16LedgerWriteCut } from './ledger-write-cut';
 
 const maximumBytes = 2_147_483_648;
 function refuse(code: string): never { throw new AppError(code, 409); }
@@ -66,9 +67,8 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
   } catch { return refuse('s16_ops_path_untrusted'); }
   const capturedAt = (options.now ?? Date.now)();
   if (!Number.isSafeInteger(capturedAt) || capturedAt < 0) refuse('s16_ops_capture_invalid');
-  const target = join(options.directory, options.id), held: Database[] = [], images: S16LedgerSet['images'][number][] = [];
-  let bytes = 0, releaseFailed = false;
-  const sizes = new Map<Database, number>();
+  const target = join(options.directory, options.id), images: S16LedgerSet['images'][number][] = [];
+  let bytes = 0, cut: S16LedgerWriteCut | undefined;
   let targetEntry: ReturnType<typeof lstatSync> | undefined;
   const current = () => {
     if ((options.guard() as unknown) !== undefined) refuse('s16_ops_capture_invalid');
@@ -78,45 +78,15 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
     try { for (;;) { const item = dir.readSync(); if (!item) break; if (++count > sources.length + 1 || !names.has(item.name)) refuse('s16_ops_inventory_changed'); } } finally { dir.closeSync(); } };
   try {
     current();
-    for (const source of sources) {
-      if (source.database.inTransaction) refuse('s16_ops_source_busy');
-      if (source.database.query<{ name: string }, []>('PRAGMA database_list').all().some(row => !['main', 'temp'].includes(row.name))) refuse('s16_ops_attached_unsupported');
-      if (source.database.query<{ query_only: number }, []>('PRAGMA query_only').get()?.query_only !== 0) refuse('s16_ops_source_not_writable');
-      try { source.database.exec('BEGIN IMMEDIATE'); held.push(source.database); } catch { refuse('s16_ops_source_busy'); }
-      const db = source.database, applicationId = db.query<{ application_id: number }, []>('PRAGMA application_id').get()?.application_id,
-        version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version;
-      if (applicationId === undefined || version === undefined || (applicationId >>> 0) !== source.reader.applicationId || !source.reader.formats.includes(version >>> 0)) refuse('s16_ops_reader_unsupported');
-      // Read-only/query-only SQLite accepts BEGIN IMMEDIATE without the promised write reservation.
-      // A zero-row DML probe requires the actual main writer transaction without changing any row,
-      // dirtying a header page, firing row triggers or relying on a temporary database's writability.
-      const table = db.query<{ name: string }, []>("SELECT name FROM main.sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 1").get();
-      if (!table) refuse('s16_ops_source_not_writable');
-      try { db.exec(`DELETE FROM main."${table.name.replaceAll('"', '""')}" WHERE 0`); } catch { refuse('s16_ops_source_not_writable'); }
-    }
-    current();
-    let planned = 0;
-    for (const source of sources) {
-      const db = source.database, pageSize = db.query<{ page_size: number }, []>('PRAGMA page_size').get()?.page_size,
-        pages = db.query<{ page_count: number }, []>('PRAGMA page_count').get()?.page_count,
-        applicationId = db.query<{ application_id: number }, []>('PRAGMA application_id').get()?.application_id,
-        version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version;
-      if (applicationId === undefined || version === undefined || (applicationId >>> 0) !== source.reader.applicationId || !source.reader.formats.includes(version >>> 0)) refuse('s16_ops_reader_unsupported');
-      const size = pageSize! * pages!;
-      if (!Number.isSafeInteger(size) || size < 512 || size > 1_073_741_824 || planned + size > limit) refuse('s16_ops_capture_bounds');
-      if (db.query<{ quick_check: string }, []>('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' || db.query('PRAGMA foreign_key_check').get()) refuse('s16_ops_continuity_invalid');
-      sizes.set(db, size); planned += size;
-    }
+    cut = openS16LedgerWriteCut({ sources, guard: current, maxBytes: limit });
     if (lstatSync(target, { throwIfNoEntry: false })) { if (!options.resume) refuse('s16_ops_point_unavailable'); }
     else { if (options.verifyOnly) refuse('s16_ops_point_unavailable'); try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); } }
     targetEntry = lstatSync(target); current(); inventory();
     opsSyncDirectory(options.directory);
     for (const source of sources) {
       current();
-      const data = source.database.serialize();
-      if (data.byteLength !== sizes.get(source.database) || bytes + data.byteLength > limit) refuse('s16_ops_capture_bounds');
-      // SQLite's documented serialized-image conversion; user_version and every source page stay unchanged.
-      if (data[18] !== data[19] || ![1, 2].includes(data[18]!)) refuse('s16_ops_image_invalid');
-      data[18] = 1; data[19] = 1;
+      const data = cut.serialize(source.name);
+      if (bytes + data.byteLength > limit) refuse('s16_ops_capture_bounds');
       const path = join(target, source.name);
       if (lstatSync(path, { throwIfNoEntry: false })) {
         const existing = observeS16LedgerImage(path, { ...source.reader, ownerUid });
@@ -130,8 +100,7 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
       bytes += image.bytes; images.push(Object.freeze({ ...image, name: source.name }));
     }
   } finally {
-    for (const database of held.reverse()) { try { database.exec('ROLLBACK'); } catch { releaseFailed = true; } }
-    if (releaseFailed) refuse('s16_ops_source_release_unknown');
+    cut?.close();
   }
   current();
   const manifest = Object.freeze({ contract: 's16-ledger-set/v1' as const, scope: 'caller_selected_ledgers' as const,
