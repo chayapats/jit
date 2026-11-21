@@ -89,3 +89,14 @@ current public native content and fresh deep quarantine even with an independent
 producer receipt. In backup.verifying this accepts only the original confirmed
 action and existing plan/manifest/receipt; no new capture/attempt is admitted.
 This strengthens current readback without turning old snapshots into authority.
+
+A complete retained backup also supports this verification with both
+`verifyCurrent: true` and `ownedStaging: true` (ADR 0126). Require the original
+confirmed capture and staging-ownership actions, original options, exact current
+namespace and retained point binding. Missing original plan, receipt, member,
+quarantine or inode marker refuses before recreation. Only the original owned
+scratch may be refreshed for public deep validation. The retained component,
+current source facts, completed request and any other operation's fence stay
+unchanged. Retirement removes this verification capability; it does not permit
+recreating the former staging. This is a protected current-state check, not a
+package selector or permission to resume the completed backup.

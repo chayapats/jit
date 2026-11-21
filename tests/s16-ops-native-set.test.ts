@@ -60,6 +60,15 @@ test('explicitly empty native custody publishes an empty component without creat
   for (const path of ['native-chat', 'native-model']) expect(existsSync(join(f.runtimeDirectory, path))).toBe(false); expect(existsSync(join(f.directory, 'native-github'))).toBe(false);
 });
 
+test.each(['quarantine', 'scratch.json'])('backup verifying refuses missing original %s before recreating scratch', async name => {
+  const f = await fixture(false), state = f.start(), original = state.session({ ...settings, ownedStaging: true }), result = await original.capture(); await original.close();
+  state.journal.advance(requestId, state.journal.read().revision, 'verifying');
+  const path = join(dirname(result.directory), name); rmSync(path, { recursive: true });
+  const before = readFileSync(join(f.directory, 'operations/control.json')), session = state.session({ ...settings, ownedStaging: true, verifyCurrent: true });
+  await expect(session.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_path_untrusted' }));
+  expect(existsSync(path)).toBe(false); expect(readFileSync(join(f.directory, 'operations/control.json'))).toEqual(before);
+});
+
 test('verifying-phase native readback rechecks only an original confirmed component and cannot admit another capture action', async () => {
   const f = await fixture(false), { ctx, journal, session: open } = f.start(), initial = open(), result = await initial.capture(); await initial.close();
   journal.advance(requestId, journal.read().revision, 'verifying', { cohortSha256: 'e'.repeat(64), targetSha256: 'f'.repeat(64) }); const before = journal.read();
