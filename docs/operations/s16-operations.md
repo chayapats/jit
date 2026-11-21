@@ -59,6 +59,9 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
 cutover; compatible release/client lifecycle acceptance remains separate.
+The [disposable Linux proof](../evidence/s16-linux-installer-proof.md) separately
+records actual non-login identity, systemd, private first setup and HTTP file/
+session continuity through retained uninstall/reinstall and compatible upgrade.
 
 ## Guarded release coordinator
 
