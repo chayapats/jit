@@ -151,7 +151,7 @@ elif [ "$s15" = true ]; then
   '  Build/install the sealed release; write a credential-free /etc/jit-s15/s15-runtime.json once (Codex route; no policy, budget or GitHub rule).' \
   '  Initialize only a new state directory (init --s15); existing state is never re-initialized or migrated.' \
   '  Install/enable/start hardened jit-s15.service and a bounded journald namespace; switch /opt/jit-s15/current atomically; the working VM keeps running.' \
-  '  Probe local health. A failed upgrade restores the previous release and unit; a failed fresh install removes the new unit and new state.' \
+  '  Probe local health. Selected S16 setup retains initialized state and original intent on failure; compatible fallback uses current state without authority rewind.' \
   '  Right after health, deliver the 15-minute first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.' \
   '  Follow the automatic working computer (a KVM VM run as jit-s15-vmm), print its progress and the remaining owner Web steps.'
   if [ -z "$source_dir" ]; then printf '  Download release artifact/checksum from %s.\n' "$release_url"; fi
@@ -358,7 +358,7 @@ input_owner=${SUDO_UID:-0}
 # bunfig, .env, .local or Git metadata in the privileged bootstrap.
 trusted_input "$source_dir/ops/package"
 mkdir -m 755 "$scratch/source"
-for entry in package.json bun.lock src ops/package ops/box vendor; do
+for entry in package.json bun.lock src ops/package ops/box vendor LICENSE NOTICE third_party; do
   trusted_input "$source_dir/$entry"
   # Only the single ops parent can be missing; every ancestor is already protected.
   # shellcheck disable=SC2174
@@ -375,6 +375,22 @@ unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -ui
 [ -z "$unsafe" ] || failed
 source_dir=$scratch/source
 chmod 755 "$scratch"
+# The installer imports the public engine contract before package staging. A
+# source snapshot has no node_modules: resolve its frozen production inputs
+# explicitly, without lifecycle scripts, user configuration or implicit Bun
+# auto-install. A shipped dependency tree remains untouched for validation.
+if [ ! -d "$source_dir/node_modules" ]; then
+  step=bootstrap-dependencies
+  next='restore access to the frozen public dependency inputs, then re-run the same trusted release'
+  mkdir -m 700 "$scratch/bun-cache"
+  (umask 022; timeout 600 env -i PATH="$PATH" HOME=/root BUN_INSTALL_CACHE_DIR="$scratch/bun-cache" "$bun" install --cwd "$source_dir" --frozen-lockfile --production --ignore-scripts --linker=hoisted </dev/null >/dev/null 2>&1) || failed
+  # Bin links are unused by the installer and cannot enter a trusted code tree.
+  # Normalize only this newly installed snapshot, never a supplied dependency seal.
+  rm -rf -- "$source_dir/node_modules/.bin"
+  find "$source_dir/node_modules" -type d -exec chmod 755 {} +
+  find "$source_dir/node_modules" -type f -perm /111 -exec chmod 755 {} +
+  find "$source_dir/node_modules" -type f ! -perm /111 -exec chmod 644 {} +
+fi
 set -- apply --root / --source "$source_dir" --uninstall "$uninstall" "$selector" "$selected"
 if [ "$s15" = false ]; then set -- "$@" --computer-slots "$computer_slots"; fi
 if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" "$@" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi

@@ -1,3 +1,4 @@
+import { ownerExportLimits, ownerExportSections, parseOwnerExportRequest, validateOwnerExport, type OwnerExport, type OwnerExportRequest } from './owner-export';
 import { workingStateManifest, workingStateImport, workingStateView, type WorkingStateManifest, type WorkingStateImport, type WorkingStateView } from "./working-state";
 import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
@@ -72,6 +73,10 @@ export class JitClient {
     const data = await this.call("/bootstrap", "GET", undefined, signal);
     if (generation !== this.#sessionGeneration) throw new JitClientError("client_response_stale", null, "response");
     if (!record(data) || data.contract !== "s16-client-bootstrap/v1" || typeof data.csrf !== "string" || !data.csrf || data.csrf.length > 4096 || !record(data.capabilities) || data.capabilities.contract !== "s16-client-capabilities/v1" || !Array.isArray(data.conversations) || data.conversations.length > 64 || !Array.isArray(data.needsYou) || data.needsYou.length > 1024) return invalid();
+    if (data.capabilities.dataExport !== undefined) {
+      const capability = data.capabilities.dataExport;
+      if (!record(capability) || capability.available !== true || capability.contract !== 's16-owner-export/v1' || !Array.isArray(capability.sections) || !capability.sections.length || new Set(capability.sections).size !== capability.sections.length || !capability.sections.every(section => ownerExportSections.some(known => known === section)) || !record(capability.limits) || Object.keys(capability.limits).length !== Object.keys(ownerExportLimits).length || !Object.entries(ownerExportLimits).every(([key, value]) => (capability.limits as Record<string, unknown>)[key] === value)) return invalid();
+    }
     for (const entry of data.conversations) if (!record(entry) || !identifier(entry.conversationId) || typeof entry.firstMessage !== "string" || !Number.isSafeInteger(entry.latestAt)) return invalid();
     if (data.sessionScope !== undefined && (typeof data.sessionScope !== "string" || !/^[a-f0-9]{64}$/.test(data.sessionScope))) return invalid();
     const scope = typeof data.sessionScope === "string" ? data.sessionScope : null;
@@ -83,6 +88,38 @@ export class JitClient {
   }
   /** Local continuity marker only. A change/lost binding requires private UI revalidation; this conveys no authority or secret. */
   get authenticationRevision(): number { return this.#authenticationRevision; }
+  /** Fresh bounded owner download. Auth/source failure is never retried or restored from local storage. */
+  async exportData(input: OwnerExportRequest, signal?: AbortSignal): Promise<{ bytes: Uint8Array; value: OwnerExport }> {
+    if (!this.#csrf) throw new JitClientError('client_not_initialized', null, 'not_sent');
+    if (signal?.aborted) throw new JitClientError('aborted', null, 'not_sent');
+    if (!globalThis.crypto?.subtle) throw new JitClientError('client_crypto_unavailable', null, 'not_sent');
+    let scope: OwnerExportRequest;
+    try { scope = parseOwnerExportRequest(structuredClone(input), ownerExportSections); } catch { throw new JitClientError('invalid_owner_export', null, 'not_sent'); }
+    const generation = this.#sessionGeneration; let response: Response;
+    try { response = await this.#fetch(new Request(`${this.origin}/api/s16/client/export`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'x-csrf-token': this.#csrf }, credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', body: JSON.stringify(scope), ...(signal ? { signal } : {}) })); }
+    catch { throw new JitClientError(signal?.aborted ? 'aborted' : 'connection_lost', null, 'not_sent'); }
+    if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError('client_response_stale', response.status, 'response'); }
+    if (response.status === 401 || response.status === 403) this.clear();
+    if (!response.ok) { const value = await this.json(response, 'GET', null); throw new JitClientError(safeCode(record(value) ? value.error : null), response.status, 'response'); }
+    const size = response.headers.get('content-length'), digest = response.headers.get('x-content-sha256');
+    if (response.redirected || response.headers.get('content-type') !== 'application/json; charset=utf-8' || response.headers.get('content-disposition') !== 'attachment; filename="jit-export.json"' || !response.headers.get('cache-control')?.includes('no-store') || response.headers.get('x-content-type-options') !== 'nosniff' || !size || !/^[1-9][0-9]{0,7}$/.test(size) || Number(size) > ownerExportLimits.bytes || !sha256(digest)) { await response.body?.cancel().catch(() => {}); return invalid(); }
+    const reader = response.body?.getReader(); if (!reader) return invalid(); const bytes = new Uint8Array(Number(size)); let offset = 0;
+    try { for (;;) { const chunk = await reader.read();
+      if (generation !== this.#sessionGeneration || signal?.aborted) { await reader.cancel().catch(() => {}); throw new JitClientError(signal?.aborted ? 'aborted' : 'client_response_stale', response.status, 'response'); }
+      if (chunk.done) break; if (offset + chunk.value.length > bytes.length) { await reader.cancel().catch(() => {}); return invalid(); } bytes.set(chunk.value, offset); offset += chunk.value.length;
+    } } finally { reader.releaseLock(); }
+    const observed = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2, '0')).join('');
+    if (generation !== this.#sessionGeneration || signal?.aborted) throw new JitClientError(signal?.aborted ? 'aborted' : 'client_response_stale', response.status, 'response');
+    if (offset !== bytes.length || observed !== digest) return invalid();
+    let value: unknown; try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); validateOwnerExport(value, scope); } catch { return invalid(); }
+    for (const item of value.records) if (item.kind === 'file' || item.kind === 'artifact') {
+      const content = item.representation === 'base64' ? Uint8Array.from(atob(item.text!), character => character.charCodeAt(0)) : new TextEncoder().encode(item.text!);
+      const checksum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', content))].map(part => part.toString(16).padStart(2, '0')).join('');
+      if (checksum !== item.sha256 || content.length !== item.bytes) return invalid();
+      if (generation !== this.#sessionGeneration || signal?.aborted) throw new JitClientError(signal?.aborted ? 'aborted' : 'client_response_stale', response.status, 'response');
+    }
+    return { bytes, value };
+  }
   /** Reads current protected-browser custody and sign-in capability; starts no Bot work. */
   async protectedBrowser(signal?: AbortSignal): Promise<ProtectedBrowserView> {
     const data = await this.call('/protected-browser', 'GET', undefined, signal);

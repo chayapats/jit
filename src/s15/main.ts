@@ -2,6 +2,8 @@ import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { readComputerNeedsYouMinutes } from '../config';
 import { s16ComputerIdleStopMs } from '../s16/computers/defaults';
+import { openS16InstallationLease } from '../s16/operations/installation-lease';
+import { assertS16OperationsOwnerBinding } from '../s16/operations/operations-owner';
 import { AppError } from '../errors';
 import { readHiddenPassword } from '../terminal-password';
 import { ConnectionVault } from '../exec/connections';
@@ -51,29 +53,40 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
   if (initialize) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
   const state = lstatSync(config.directory);
   if (!state.isDirectory() || state.isSymbolicLink() || state.mode & 0o077) throw new AppError('unprotected_ledger');
-  const ownerDirectory = join(config.directory, 'owner');
-  if (initialize) mkdirSync(ownerDirectory, { mode: 0o700 });
-  const ownerState = lstatSync(ownerDirectory);
-  if (!ownerState.isDirectory() || ownerState.isSymbolicLink() || ownerState.mode & 0o077) throw new AppError('unprotected_ledger');
-  const ownerPath = join(ownerDirectory, 'owner.sqlite');
-  if (!initialize && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
-  const ownerStore = new S14Store(ownerPath);
-  // Same API and separation as S14: broker secrets are outside state, backups and execution roots.
-  const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [ownerDirectory, join(config.directory, 'runtime'), join(config.directory, 'backups')] });
-  const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
+  const installationLease = openS16InstallationLease({ directory: config.directory, mode: 'shared', create: true });
+  let retained = false, releaseLease = true, closeOwnerStore = () => {}, closeRecipients = () => {};
   let service: Awaited<ReturnType<typeof composeS15>> | undefined;
   let provisioned: ProvisionedBrowser | null = null;
+  let availabilityTimer: ReturnType<typeof setInterval> | undefined;
+  let closeOwnerApp: (() => Promise<void>) | undefined;
   try {
+    if (installationLease.operations && installationLease.operations.installationId !== config.installationId) throw new AppError('s16_ops_control_invalid', 409);
+    const ownerDirectory = join(config.directory, 'owner');
+    if (initialize) mkdirSync(ownerDirectory, { mode: 0o700 });
+    const ownerState = lstatSync(ownerDirectory);
+    if (!ownerState.isDirectory() || ownerState.isSymbolicLink() || ownerState.mode & 0o077) throw new AppError('unprotected_ledger');
+    const ownerPath = join(ownerDirectory, 'owner.sqlite');
+    if (!initialize && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
+    assertS16OperationsOwnerBinding(installationLease, config.directory);
+    const ownerStore = new S14Store(ownerPath);
+    closeOwnerStore = () => ownerStore.close();
+    if (installationLease.operations && ownerStore.read(tx => tx.get<{ id: string }>('SELECT id FROM memory_identity')?.id) !== installationLease.operations.ownerIdentity) throw new AppError('s16_ops_control_invalid', 409);
+    // Same API and separation as S14: broker secrets are outside state, backups and execution roots.
+    const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [ownerDirectory, join(config.directory, 'runtime'), join(config.directory, 'backups')] });
+    const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
+    closeOwnerApp = () => ownerApp.signIns.close();
     if (args[0] === 'owner-link') { writeS14OwnerSetupLink(ownerStore, config.origin, 3); return; }
     if (args[0] === 'credential') {
       const key = args[args.indexOf('--key') + 1]; if (!key || !args.includes('--secret-stdin')) throw new AppError('secret_stdin_required');
       const secret = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, '');
       if (!secret || secret.length > 4096 || /[\r\n\0]/.test(secret)) throw new AppError('invalid_credential');
+      installationLease.assertCurrent();
       vault.write(s15CredentialKey(config.installationId, key), secret); readS15Credential(vault, config.installationId, key); console.log(JSON.stringify({ state: 'credential_stored' })); return;
     }
     if (setup) {
       if (!process.stdin.isTTY && !args.includes('--password-stdin')) throw new AppError('password_stdin_flag_required');
       const password = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, '');
+      installationLease.assertCurrent();
       await ownerApp.provisionOwner(password);
     }
     const generation = () => ownerStore.read(tx => tx.get<{ generation: number }>('SELECT generation FROM owner')?.generation ?? 1);
@@ -85,7 +98,6 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const proxySocketFd = !initialize && config.vm.vmm ? takeInheritedSocket(vmmProxySocketName) : null;
     // Approved subscription routes become available once this identity's Web device login stores a credential.
     const availability = liveRouteAvailability();
-    let availabilityTimer: ReturnType<typeof setInterval> | undefined;
     if (!initialize && !localCommand) {
       await availability.refresh(config.models);
       availabilityTimer = setInterval(() => { void availability.refresh(config.models).catch(() => {}); }, 15_000); availabilityTimer.unref?.();
@@ -100,6 +112,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const defaultCatalog = s15DefaultCatalog(config.models);
     // AUTH16-01: installation-wide people the owner addressed and remembered private-data recipients (ADR 0084).
     const recipients = new RecipientDirectory(join(config.directory, 'recipients.sqlite'), config.installationId);
+    closeRecipients = () => recipients.close();
     const catalogs: S15CompositionOptions['catalogs'] = {
       current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? recipients.catalog(kind, id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
@@ -169,7 +182,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     }
     const binding = personalServiceBinding(config.origin), auth = createS14Handler(ownerApp, config.origin, renderS14, createS14Product(ownerApp), createS14Auth(ownerApp));
     const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
-      try { const incoming = binding.proxy ? personalProxyRequest(request, config.origin) : request, url = new URL(incoming.url);
+      try { installationLease.assertCurrent(); const incoming = binding.proxy ? personalProxyRequest(request, config.origin) : request, url = new URL(incoming.url);
         return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || url.pathname.startsWith('/api/s14/sign-in/') || ['/api/s14/providers', '/api/s14/personal', '/settings/provider'].includes(url.pathname) || url.pathname.startsWith('/settings/google') || url.pathname.startsWith('/api/s14/personal/oauth/') || !!lookupS14Asset(url.pathname) ? auth(incoming) : service!.fetch(incoming);
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
@@ -177,13 +190,18 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     try { service.provisioning?.ensure(); } catch { /* The Web card shows the host reason and offers the owner's start. */ }
     // BROW15-02: verify (or download once) the pinned Chromium in the background; Resources → Websites shows each step.
     void provisioned?.chromium.start();
-    const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
-    const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await provisioned?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
+    const wake = setInterval(() => { try { installationLease.assertCurrent(); void service?.drain().catch(() => {}); } catch { /* A changed installation lease never admits another drain. */ } }, 1000);
+    const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await provisioned?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); closeRecipients(); ownerStore.close(); installationLease.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
+    retained = true;
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
-  } catch (error) { await service?.close(); await provisioned?.close(); ownerStore.close(); throw error; }
-  finally { if (initialize || localCommand) ownerStore.close(); }
+  } catch (error) {
+    if (error instanceof AppError && error.code === 's16_ops_source_release_unknown') releaseLease = false;
+    throw error;
+  } finally {
+    if (!retained) { clearInterval(availabilityTimer); await service?.close(); await provisioned?.close(); await closeOwnerApp?.(); closeRecipients(); closeOwnerStore(); if (releaseLease) installationLease.close(); }
+  }
 }
 
 /**

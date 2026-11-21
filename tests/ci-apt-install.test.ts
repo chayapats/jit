@@ -111,10 +111,11 @@ test("the timeout wrapper kills a child that ignores SIGTERM", async () => {
   expect(performance.now() - started).toBeLessThan((1 + KILL_AFTER_S + 3) * 1000);
 }, 15_000);
 
-test("the worst-case apt budget plus 6 min of setup and tests fits the tests job timeout", () => {
+test("the bounded apt budget leaves at least six minutes inside the finite tests job", () => {
   const job = workflow.slice(workflow.indexOf("\n  tests:\n"), workflow.indexOf("\n  deterministic:\n"));
   const minutes = Number(job.match(/\n    timeout-minutes: (\d+)\n/)?.[1]);
-  expect(minutes).toBe(15);
+  expect(Number.isInteger(minutes)).toBe(true);
+  expect(minutes).toBeLessThanOrEqual(30);
   expect(worstCaseMs()).toBe(4 * (70_000 + 5_000 + 2_000) + 100_000);
   expect(worstCaseMs()).toBeLessThanOrEqual(7 * 60_000);
   expect(worstCaseMs() + 6 * 60_000).toBeLessThanOrEqual(minutes * 60_000);

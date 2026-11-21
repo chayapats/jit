@@ -226,5 +226,7 @@ export class VoiceService<Actor> {
     this.journal.tx(() => { for (const previous of records) { const record = this.get(previous.id); if (['capturing', 'processing', 'ready'].includes(record.state)) { record.state = 'cancelled'; record.reservedMs = 0; this.save(record); } this.results.delete(record.id); } });
   }
   /** Native engine closure joins all children before journal/capacity custody closes. */
+  /** Protected host maintenance only; raw audio/engine state and callable work authority are not included. */
+  maintenanceSource(): import('bun:sqlite').Database { return this.journal.db; }
   close(): Promise<void> { return this.closing ??= (async () => { this.closed = true; const calls = this.calls?.close(); for (const active of this.active.values()) active.abort.abort(); await this.engine.close(); await calls; await Promise.allSettled([...this.active.values()].map(value => value.promise)); this.results.clear(); this.journal.close(); })(); }
 }

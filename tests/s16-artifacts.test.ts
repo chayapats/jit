@@ -95,7 +95,10 @@ test("adopting an artifact is exact, idempotent and confined to its own conversa
   expect(f.modelPrompts.length).toBe(calls);
   // Rollback fence: a reader without parent-chain enforcement refuses the journal once a copy exists.
   const journal = join(f.directory, "files.sqlite"); expect(readFileSync(journal).readUInt32BE(60)).toBe(3);
-  expect(() => new DurableJournal(journal, "fixture", false, 0x4a495446, undefined, [1, 2])).toThrow("continuity_unavailable");
+  expect(() => new DurableJournal(journal, "fixture", false, 0x4a495446, undefined, [1, 2])).toThrow("runtime_already_open");
+  // A separate process has no local owner reservation, so this proves actual old-reader format refusal.
+  const probe = Bun.spawnSync([process.execPath, '-e', `import {DurableJournal} from './src/s15/durable-journal';let code='incorrectly_opened';try{const journal=new DurableJournal(${JSON.stringify(journal)},'fixture',false,0x4a495446,undefined,[1,2]);journal.close();}catch(error){code=error.code;}console.log(JSON.stringify({code}));`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+  expect(probe.exitCode).toBe(0); expect(probe.stderr.length).toBe(0); expect(JSON.parse(probe.stdout.toString())).toEqual({ code: 'continuity_unavailable' });
   const changed = await f.request(`/api/s16/client/artifacts/${artifact.id}/inputs`, "POST", { requestId: "adopt1", conversationId: "conversation", sha256: "0".repeat(64) });
   expect(changed.status).toBe(409);
   expect((await f.request(`/api/s16/client/artifacts/${artifact.id}/inputs`, "POST", { requestId: "adopt2", conversationId: "other", sha256: artifact.sha256 })).status).toBe(403);

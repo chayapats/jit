@@ -40,6 +40,8 @@ export interface AttemptSettlement { transportSettled: boolean; executionSettled
 /** Stable host-only API consumed by GitHub babysitting. All event/settlement inputs are trusted service
  * observations, not model claims. Each new attempt still needs POLICY and owning-tool final I/O guards. */
 export interface ResponsibilityPort {
+  /** Protected host maintenance only; not a responsibility command, work grant or client projection. */
+  maintenanceSource?(): import('bun:sqlite').Database;
   /** Capture the original authenticated conversation responsibility once; never turn acceptance into execution. */
   assign(owner: OwnerActor, input: { requestId: string; sourceRequestId: string; completion: string; triggers: ResponsibilityEvent['kind'][]; stallPolicy: StallPolicy }): Responsibility;
   /** Claim one ready event once under current authority. Lost handles cannot be recreated after restart. */

@@ -199,6 +199,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { li
       const ids = journal.tx(() => journal.all<Responsibility>().filter(r => r.ownerGeneration === p.ownerGeneration).map(r => r.id)).reverse().slice(0, 64);
       return ids.map(id => service.project(owner, id));
     },
+    maintenanceSource: () => journal.db,
     close() { for (const controller of running.values()) controller.abort(); running.clear(); journal.close(); },
   };
   const stop = service.stop;

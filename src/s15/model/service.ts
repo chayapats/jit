@@ -400,6 +400,7 @@ export function openModelService(options: ModelOptions): ModelService {
           return { workId, pins: pin };
         }), selections: records.map(({ output, ...safe }) => safe), unsettled: reservations.filter(r => !r.transportSettled).length };
     },
+    maintenanceSource: () => journal.db,
     forgetRouteCatalog(route) { if (route === undefined) catalogs.clear(); else catalogs.delete(route); },
     close() {
       if (active.size) fail('capacity_busy'); journal.close();
