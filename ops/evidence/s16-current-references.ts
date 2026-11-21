@@ -36,7 +36,7 @@ export async function verifyS16CurrentReferencesPackage(input: { receipt: string
     const stageFixture = 'ops/evidence/s15-stage.ts'; mkdirSync(join(harness, 'ops/evidence'), { recursive: true, mode: 0o700 }); cpSync(join(source, stageFixture), join(harness, stageFixture));
     const fixtureHashes = [...files(join(harness, 'tests')).map(path => ({ path: 'tests/' + path, sha256: hash(readFileSync(join(harness, 'tests', path))) })), { path: stageFixture, sha256: hash(readFileSync(join(harness, stageFixture))) }];
     // Every production import and CLI child resolves to the sealed artifact; test drivers stay outside it.
-    symlinkSync(join(artifact, 'src'), join(harness, 'src')); symlinkSync(join(artifact, 'node_modules'), join(harness, 'node_modules'));
+    symlinkSync(join(artifact, 'src'), join(harness, 'src')); symlinkSync(join(artifact, 'ops/box'), join(harness, 'ops/box')); symlinkSync(join(artifact, 'node_modules'), join(harness, 'node_modules'));
     const command = [process.execPath, 'test', '--timeout', '30000', ...suites], launcher = `const child=Bun.spawn(${JSON.stringify(command)},{stdin:'ignore',stdout:1,stderr:1});process.exit(await child.exited);`;
     const tested = await spawnRunner([process.execPath, '-e', launcher], { cwd: harness, env: { ...env, ...(process.env.JIT_TEST_PYTHON ? { JIT_TEST_PYTHON: process.env.JIT_TEST_PYTHON } : {}) }, timeoutMs: 180_000 });
     const log = tested.stdout; opsWrite(input.receipt + '.tests.log', log);
