@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, opendirSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createHost, MAX_SNAPSHOT_SESSIONS, RELEASE_CONTRACT, type HostRuntime, type HostSessionReference, type HostSessionSnapshot } from 'schway/host';
+import { RELEASE_CONTRACT, type HostRuntime, type HostSessionReference, type HostSessionSnapshot } from 'schway/host';
 import { AppError } from '../../errors';
 import { opsDirectory, opsRead, opsWrite } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
@@ -17,24 +17,13 @@ import { assertS16RecoveryStageFor } from './recovery-staging';
 import { s16RuntimeReaders } from './runtime-readers';
 import { verifyS16LedgerSet } from './verify-ledger-set';
 import { verifyS16PayloadSources, type S16PayloadSource } from './payload-set';
+import { s16RecoveryLimits, s16RecoveryNames as names, s16RecoveryUsage as usage } from './recovery-usage';
+import { verifyS16NativeQuarantine } from './native-quarantine';
 
-const metadataBound = 4194304, storageBound = 12884901888, nodeBound = 250000;
+const metadataBound = 4194304, storageBound = s16RecoveryLimits.bytes, nodeBound = s16RecoveryLimits.nodes;
 const hash = (value: Uint8Array | string) => createHash('sha256').update(value).digest('hex');
 function refuse(code = 's16_ops_candidate_invalid'): never { throw new AppError(code, 409); }
 function text(value: unknown): string { const result = JSON.stringify(value); if (Buffer.byteLength(result) > metadataBound) refuse('s16_ops_recovery_bounds'); return result; }
-function names(path: string, limit: number): string[] {
-  const result: string[] = [], directory = opendirSync(path);
-  try { for (;;) { const next = directory.readSync(); if (!next) break; if (result.length >= limit) refuse('s16_ops_recovery_bounds'); result.push(next.name); } }
-  finally { directory.closeSync(); } return result.sort();
-}
-function usage(root: string): { bytes: number; nodes: number } {
-  let bytes = 0, nodes = 0;
-  const visit = (path: string, depth: number) => {
-    if (++nodes > nodeBound || depth > 32) refuse('s16_ops_recovery_bounds'); const stat = lstatSync(path);
-    if (stat.isDirectory() && !stat.isSymbolicLink()) { s16PointEntry(path, true); for (const name of names(path, nodeBound - nodes)) visit(join(path, name), depth + 1); }
-    else { const file = s16PointEntry(path); if (file.size > 1073741824n || (bytes += Number(file.size)) > storageBound) refuse('s16_ops_recovery_bounds'); }
-  }; visit(root, 0); return { bytes, nodes };
-}
 interface RootPlan { id: string; sourceSha256: string; root: string; home: string; sessions: string }
 /** Authenticated historical custody only; no historical row/native context is activated in the installation. */
 export interface S16CandidateObservation {
@@ -168,14 +157,9 @@ export function openS16CandidateQuarantine(owner: S16CandidateOwner, options: S1
             if (!snapshot) continue;
             const occupied = usage(globalStage), allowance = snapshot.sessions.reduce((n, session) => n + session.artifacts.reduce((size, artifact) => size + artifact.size, 0) + 65536, 0);
             if (occupied.bytes + allowance > storageBound || occupied.nodes + snapshot.sessions.length * 16 + 32 > nodeBound) refuse('s16_ops_recovery_bounds');
-            const root = join(quarantine, selected.id), host = await createHost({ workspaceRoot: join(current.directory, 'workspace'), homeDirectory: join(root, 'home'), sessionDirectory: join(root, 'sessions'),
-              context: { policy: 'strict', systemPrompt: 'Protected historical candidate quarantine only.', sections: [] }, tools: { policy: 'exact', definitions: [], hostedLookup: 'off' }, limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 1024, deadlineMs: 1000 } }); hosts.add(host);
-            try {
-              stageCurrent(); after('native_restore', selected.id); stageCurrent(); const result = await host.restoreSessionSnapshot(snapshot, { excludeRetired: false }); stageCurrent();
-              if (result.status !== 'restored' || canonical([...result.sessions].sort((a, b) => a.id.localeCompare(b.id))) !== canonical(snapshot.sessions.map(session => ({ id: session.id, branchId: session.branchId })).sort((a, b) => a.id.localeCompare(b.id)))) refuse('s16_ops_native_quarantined');
-              const actual = await host.listSessions({ limit: MAX_SNAPSHOT_SESSIONS }); stageCurrent();
-              if (actual.next !== undefined || actual.sessions.length !== snapshot.sessions.length || actual.sessions.some(row => !snapshot.sessions.some(session => session.id === row.reference.id && row.state === (session.retired ? 'retired' : 'active')))) refuse('s16_ops_native_quarantined');
-            } finally { await releaseHost(host); }
+            const root = join(quarantine, selected.id);
+            await verifyS16NativeQuarantine({ workspaceRoot: join(current.directory, 'workspace'), homeDirectory: join(root, 'home'), sessionDirectory: join(root, 'sessions'), snapshot,
+              guard: stageCurrent, retain(host) { hosts.add(host); }, release: releaseHost, beforeRestore() { after('native_restore', selected.id); } });
             usage(globalStage);
           } finally { await releaseRoot(cap); }
           after('native', selected.id);
