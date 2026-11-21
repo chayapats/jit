@@ -7,6 +7,7 @@ import { canonical, identity } from '../../s15/conversation/validation';
 import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from './installation-lease';
 import type { S16OperationsJournal } from './operations-journal';
 import { s16PointEntry, s16PointEntryIdentity } from './point-files';
+import type { S16OperationsControl, S16OperationsRequest } from './operations-state';
 
 const parts = ['ledgers', 'payloads', 'quarantine'] as const;
 export type S16RecoveryStagePart = typeof parts[number];
@@ -14,6 +15,11 @@ const metadata = ['candidate.json', 'current.json', 'plan.json', 'progress.json'
 const actualStages = new WeakMap<S16RecoveryStage, { requestId: string; operationId: string; assertCurrent(): void }>();
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 function refuse(code = 's16_ops_recovery_stage_invalid'): never { throw new AppError(code, 409); }
+/** Pure scope derivation; callers still authenticate the current journal, source receipt and actual inode ownership. */
+export function s16RecoveryStageScope(control: Pick<S16OperationsControl, 'id' | 'installationId' | 'ownerIdentity'>, request: S16OperationsRequest): string {
+  return hash(canonical({ contract: 's16-recovery-staging/v1', operationsId: control.id, installationId: control.installationId, ownerIdentity: control.ownerIdentity,
+    operationId: request.id, requestId: request.requestId, commandSha256: request.hash, configurationSha256: request.configurationSha256, admittedRevision: request.admittedRevision, createdAt: request.createdAt, pointId: request.pointId }));
+}
 function names(path: string, bound: number): string[] {
   const result: string[] = [], directory = opendirSync(path);
   try { for (;;) { const next = directory.readSync(); if (!next) break; if (result.length >= bound) refuse('s16_ops_recovery_bounds'); result.push(next.name); } }
@@ -52,8 +58,7 @@ export function ownS16RecoveryStage(owner: S16RecoveryStageOwner, requestId: str
     return { control, request };
   };
   const initial = read(), operationId = initial.request.id;
-  const scopeSha256 = hash(canonical({ contract: 's16-recovery-staging/v1', operationsId: initial.control.id, installationId: initial.control.installationId, ownerIdentity: initial.control.ownerIdentity,
-    operationId, requestId, commandSha256: initial.request.hash, configurationSha256: initial.request.configurationSha256, admittedRevision: initial.request.admittedRevision, createdAt: initial.request.createdAt, pointId: initial.request.pointId }));
+  const scopeSha256 = s16RecoveryStageScope(initial.control, initial.request);
   const actionId = 'recovery_own_' + scopeSha256, root = join(owner.directory, 'operations/forward-recovery', operationId);
   const path = (part: S16RecoveryStagePart) => { if (!(parts as readonly string[]).includes(part)) refuse(); return join(root, part); };
   const digests = () => ({ priorSha256: hash(canonical({ scopeSha256, root: s16PointEntryIdentity(s16PointEntry(root, true), true) })),

@@ -108,7 +108,7 @@ export interface S16ControlMaintenance {
   removePoint(requestId: string, options: S16PointRemovalOptions): Readonly<S16PointRemovalResult>;
   /** Explicit logical backup abort; temporary bytes require separate retirement. */
   abortBackup(requestId: string, options?: S16BackupAbortOptions): Readonly<S16BackupAbortResult>;
-  /** Explicit retirement of one terminal backup's independently owned temporary namespaces. */
+  /** Explicit retirement of terminal backup or complete restore independently owned temporary namespaces. */
   retireStaging(requestId: string, options: S16StagingRetirementOptions): Readonly<S16StagingRetirementResult>;
   assertCurrent(): void;
   /** Closes original SQL sources, keeping genuine installation/CHAT/controller process exclusion. */

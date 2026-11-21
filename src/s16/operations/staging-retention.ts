@@ -9,6 +9,7 @@ import type { S16OperationsRequest } from './operations-state';
 import { inspectS16OwnedStage, s16StagingOwnershipId, s16StagingPath, type S16StagingRole } from './owned-staging';
 import { s16PointEntry, s16PointEntryIdentity } from './point-files';
 import { verifyS16PayloadSources } from './payload-set';
+import { s16RecoveryStageScope } from './recovery-staging';
 
 const planBound = 16777216, bytesBound = 21474836480, nodesBound = 100000;
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -16,16 +17,17 @@ const sha = (value: unknown): value is string => typeof value === 'string' && /^
 function refuse(code = 's16_ops_staging_retirement_invalid'): never { throw new AppError(code, 409); }
 interface File { name: string; identity: string; sha256: string; bytes: number }
 interface Directory { name: string; identity: string }
+type Role = S16StagingRole | 'recovery';
 interface Stage {
-  role: S16StagingRole; captureActionId: string; ownershipId: string; rootSha256: string; dataSha256: string;
+  role: Role; captureActionId: string; ownershipId: string; rootSha256: string; dataSha256: string;
   files: File[]; directories: Directory[];
 }
 interface Plan {
-  contract: 's16-staging-retirement-plan/v1'; operationsId: string; installationId: string; ownerIdentity: string; configurationSha256: string;
+  contract: 's16-staging-retirement-plan/v1' | 's16-staging-retirement-plan/v2'; operationsId: string; installationId: string; ownerIdentity: string; configurationSha256: string;
   operationId: string; requestId: string; admittedRevision: number; createdAt: number; sourceOperationId: string; sourceRequestId: string; sourceSha256: string;
   stages: Stage[];
 }
-/** Selects an original terminal backup, never an arbitrary filesystem path or archive namespace. */
+/** Selects an original terminal backup or complete restore, never a filesystem path or archive namespace. */
 export interface S16StagingRetirementOptions {
   sourceRequestId: string;
   after?(boundary: 'admitted' | 'prepared' | 'activating' | 'intent' | 'plan' | 'file' | 'directory' | 'observed' | 'complete', member?: string): void;
@@ -42,9 +44,23 @@ function text(plan: Plan): string {
   if (Buffer.byteLength(value) > planBound) refuse('s16_ops_staging_bounds'); return value;
 }
 const segment = (value: string) => value.length > 0 && value.length <= 192 && value !== '.' && value !== '..' && !/[\x00-\x1f/\\]/.test(value);
-function allowed(role: S16StagingRole, pointId: string, name: string, directory: boolean): boolean {
+function allowed(role: Role, pointId: string, name: string, directory: boolean): boolean {
   const parts = name.split('/'); if (name === '') return directory;
   if (parts.length > 32 || parts.some(part => !segment(part))) return false;
+  if (role === 'recovery') {
+    if (parts.length === 1 && ['candidate.json', 'current.json', 'plan.json'].includes(name)) return !directory;
+    if (parts[0] === 'ledgers') return parts.length === 1 ? directory : parts[1] === pointId && (parts.length === 2 ? directory : parts.length === 3 && !directory && /^(?:manifest\.json|[a-z][a-z0-9_-]{0,63}\.sqlite)$/.test(parts[2]!));
+    const native = (rest: string[]) => rest.length === 0 ? directory : /^[a-f0-9]{32}$/.test(rest[0]!) && (rest.length === 1 ? directory : ['home', 'sessions'].includes(rest[1]!) && (rest.length > 2 || directory));
+    if (parts[0] === 'quarantine') return native(parts.slice(1));
+    if (parts[0] !== 'payloads') return false;
+    if (parts.length === 1) return directory;
+    if (parts[1] !== 'current-native') return false;
+    if (parts.length === 2) return directory;
+    if (parts[2] === 'plan.json') return parts.length === 3 && !directory;
+    if (parts[2] === 'scratch') return native(parts.slice(3));
+    if (parts[2] !== 'data') return false;
+    return parts.length === 3 ? directory : parts.length === 4 && !directory && /^(?:manifest|[a-f0-9]{32})\.json$/.test(parts[3]!);
+  }
   if (role === 'native') {
     if (parts[0] === 'quarantine') return parts.length === 1 ? directory : /^[a-f0-9]{32}$/.test(parts[1]!) && (parts.length > 2 || directory);
     if (parts[0] === 'data') return parts.length === 1 ? directory : parts.length === 2 && !directory && (['plan.json', 'manifest.json'].includes(parts[1]!) || /^[a-f0-9]{32}\.json$/.test(parts[1]!));
@@ -70,7 +86,7 @@ function digestFile(path: string): File {
     return { name: '', identity: pinned, bytes: offset, sha256: digest.digest('hex') };
   } finally { closeSync(fd); }
 }
-function inventory(root: string, role: S16StagingRole, pointId: string, guard: () => void, budget: { nodes: number; bytes: number }): Pick<Stage, 'files' | 'directories'> {
+function inventory(root: string, role: Role, pointId: string, guard: () => void, budget: { nodes: number; bytes: number }): Pick<Stage, 'files' | 'directories'> {
   const files: File[] = [], directories: Directory[] = [];
   const walk = (name: string) => {
     guard(); if (++budget.nodes > nodesBound) refuse('s16_ops_staging_bounds'); const path = name ? join(root, ...name.split('/')) : root, stat = lstatSync(path), directory = stat.isDirectory() && !stat.isSymbolicLink();
@@ -88,20 +104,32 @@ export function retireS16Staging(owner: S16StagingRetirementOwner, requestId: st
   let assertUnownedAbsent = () => {};
   const guard = () => { if ((owner.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid'); assertUnownedAbsent(); }; guard();
   const after = (boundary: Parameters<NonNullable<S16StagingRetirementOptions['after']>>[0], member?: string) => { guard(); if ((options.after?.(boundary, member) as unknown) !== undefined) refuse('s16_ops_guard_invalid'); guard(); };
-  const readSource = () => { guard(); const control = journal.read(), source = control.requests.find(row => row.requestId === options.sourceRequestId); if (!source || source.kind !== 'backup' || !(source.status === 'complete' || source.status === 'discarded' && source.abort) || source.configurationSha256 !== owner.configurationSha256) return refuse(); return { control, source }; };
+  const readSource = () => { guard(); const control = journal.read(), source = control.requests.find(row => row.requestId === options.sourceRequestId); if (!source || !(source.kind === 'backup' && (source.status === 'complete' || source.status === 'discarded' && source.abort) || source.kind === 'restore' && source.status === 'complete' && source.phase === 'complete') || source.configurationSha256 !== owner.configurationSha256) return refuse(); return { control, source }; };
   const sourceDigest = (source: S16OperationsRequest) => hash(canonical({ ...source, abort: source.abort ?? null }));
   const initial = readSource(), sourceSha256 = sourceDigest(initial.source);
-  const command = hash(canonical({ contract: 's16-staging-retirement/v1', operationsId: initial.control.id, configurationSha256: owner.configurationSha256, sourceOperationId: initial.source.id, sourceRequestId: options.sourceRequestId, sourceSha256 }));
-  const allCaptures = initial.source.actions.filter(row => row.kind === 'capture_native' || row.kind === 'capture_backend');
-  const ownership = (row: S16OperationsRequest['actions'][number]) => initial.source.actions.find(own => own.id === s16StagingOwnershipId(row.kind === 'capture_native' ? 'native' : 'point', row.id));
+  const recovery = initial.source.kind === 'restore', scopeSha256 = recovery ? s16RecoveryStageScope(initial.control, initial.source) : null;
+  const planContract = recovery ? 's16-staging-retirement-plan/v2' as const : 's16-staging-retirement-plan/v1' as const;
+  const command = hash(canonical({ contract: recovery ? 's16-staging-retirement/v2' : 's16-staging-retirement/v1', operationsId: initial.control.id, configurationSha256: owner.configurationSha256, sourceOperationId: initial.source.id, sourceRequestId: options.sourceRequestId, sourceSha256 }));
+  const allCaptures = initial.source.actions.filter(row => recovery ? row.id === 'recovery_own_' + scopeSha256 : row.kind === 'capture_native' || row.kind === 'capture_backend');
+  if (recovery && allCaptures.length !== 1) refuse('s16_ops_staging_ownership_invalid');
+  const ownership = (row: S16OperationsRequest['actions'][number]) => recovery ? row : initial.source.actions.find(own => own.id === s16StagingOwnershipId(row.kind === 'capture_native' ? 'native' : 'point', row.id));
   const captures = allCaptures.filter(row => ownership(row));
-  if (captures.some(row => ownership(row)!.kind !== 'own_staging' || ownership(row)!.state !== 'confirmed')) refuse('s16_ops_staging_ownership_invalid');
-  const capturePath = (row: S16OperationsRequest['actions'][number]) => opsPath(s16StagingPath(owner.directory, initial.source, row.kind === 'capture_native' ? 'native' : 'point', row.id));
+  if (captures.some(row => ownership(row)!.kind !== (recovery ? 'capture_backend' : 'own_staging') || ownership(row)!.state !== 'confirmed')) refuse('s16_ops_staging_ownership_invalid');
+  const roleOf = (row: S16OperationsRequest['actions'][number]): Role => recovery ? 'recovery' : row.kind === 'capture_native' ? 'native' : 'point';
+  const memberScope = recovery ? initial.source.id : initial.source.pointId!;
+  const capturePath = (row: S16OperationsRequest['actions'][number]) => opsPath(recovery ? join(owner.directory, 'operations/forward-recovery', initial.source.id) : s16StagingPath(owner.directory, initial.source, row.kind === 'capture_native' ? 'native' : 'point', row.id));
+  const inspectCapture = (row: S16OperationsRequest['actions'][number], full = true) => {
+    if (!recovery) return inspectS16OwnedStage(owner.directory, initial.control, initial.source, row.kind === 'capture_native' ? 'native' : 'point', row.id);
+    const root = capturePath(row), rootSha256 = hash(canonical({ scopeSha256, root: s16PointEntryIdentity(s16PointEntry(root, true), true) }));
+    if (row.priorSha256 !== rootSha256 || !sha(row.targetSha256) || row.observedSha256 !== row.targetSha256) refuse('s16_ops_staging_ownership_invalid');
+    if (full && hash(canonical({ scopeSha256, parts: ['ledgers', 'payloads', 'quarantine'].map(part => ({ part, identity: s16PointEntryIdentity(s16PointEntry(join(root, part), true), true) })) })) !== row.targetSha256) refuse('s16_ops_staging_ownership_invalid');
+    return { root, actionId: row.id, rootSha256, dataSha256: row.targetSha256 };
+  };
   const paths = captures.map(capturePath), allPaths = allCaptures.map(capturePath), unownedPaths = allCaptures.filter(row => !ownership(row)).map(capturePath);
   assertUnownedAbsent = () => { if (unownedPaths.some(path => lstatSync(opsPath(path), { throwIfNoEntry: false }))) refuse('s16_ops_staging_ownership_invalid'); }; guard();
   if (!initial.control.requests.some(row => row.requestId === requestId)) {
     const budget = { nodes: 0, bytes: 0 };
-    for (const capture of captures) { const role = capture.kind === 'capture_native' ? 'native' : 'point', owned = inspectS16OwnedStage(owner.directory, initial.control, initial.source, role, capture.id); inventory(owned.root, role, initial.source.pointId!, guard, budget); }
+    for (const capture of captures) { const role = roleOf(capture), owned = inspectCapture(capture); inventory(owned.root, role, memberScope, guard, budget); }
   }
   journal.begin({ requestId, kind: 'retire', hash: command }, initial.control.revision);
   const read = () => { const { control, source } = readSource(), request = control.requests.find(row => row.requestId === requestId); if (!request || request.kind !== 'retire' || request.hash !== command || request.configurationSha256 !== owner.configurationSha256 || sourceDigest(source) !== sourceSha256) return refuse(); return { control, source, request }; };
@@ -115,10 +143,10 @@ export function retireS16Staging(owner: S16StagingRetirementOwner, requestId: st
     const makePlan = (): Plan => {
       const budget = { nodes: 0, bytes: 0 }, stages: Stage[] = [];
       for (const capture of captures) {
-        const role = capture.kind === 'capture_native' ? 'native' : 'point', owned = inspectS16OwnedStage(owner.directory, state.control, state.source, role, capture.id);
-        stages.push({ role, captureActionId: capture.id, ownershipId: owned.actionId, rootSha256: owned.rootSha256, dataSha256: owned.dataSha256, ...inventory(owned.root, role, state.source.pointId!, guard, budget) });
+        const role = roleOf(capture), owned = inspectCapture(capture);
+        stages.push({ role, captureActionId: capture.id, ownershipId: owned.actionId, rootSha256: owned.rootSha256, dataSha256: owned.dataSha256, ...inventory(owned.root, role, memberScope, guard, budget) });
       }
-      return { contract: 's16-staging-retirement-plan/v1', operationsId: state.control.id, installationId: state.control.installationId, ownerIdentity: state.control.ownerIdentity, configurationSha256: owner.configurationSha256,
+      return { contract: planContract, operationsId: state.control.id, installationId: state.control.installationId, ownerIdentity: state.control.ownerIdentity, configurationSha256: owner.configurationSha256,
         operationId: state.request.id, requestId, admittedRevision: state.request.admittedRevision!, createdAt: state.request.createdAt, sourceOperationId: state.source.id, sourceRequestId: state.source.requestId, sourceSha256, stages };
     };
     const scope = hash(canonical({ contract: 's16-staging-retirement-scope/v1', commandSha256: command, sourceSha256 }));
@@ -147,16 +175,16 @@ export function retireS16Staging(owner: S16StagingRetirementOwner, requestId: st
     if (hash(savedBytes) !== state.request.targetSha256 || savedBytes.length !== Number(savedPlan.size) || s16PointEntryIdentity(savedPlan) !== s16PointEntryIdentity(s16PointEntry(path))) refuse('s16_ops_staging_plan_invalid');
     const plan: Plan = JSON.parse(planText);
     if (!plan || typeof plan !== 'object' || Array.isArray(plan) || !Array.isArray(plan.stages) || plan.stages.length !== captures.length || text(plan) !== planText || hash(planText) !== state.request.targetSha256) refuse('s16_ops_staging_plan_invalid');
-    const { stages, ...header } = plan, expectedHeader = { contract: 's16-staging-retirement-plan/v1', operationsId: state.control.id, installationId: state.control.installationId, ownerIdentity: state.control.ownerIdentity, configurationSha256: owner.configurationSha256,
+    const { stages, ...header } = plan, expectedHeader = { contract: planContract, operationsId: state.control.id, installationId: state.control.installationId, ownerIdentity: state.control.ownerIdentity, configurationSha256: owner.configurationSha256,
       operationId: state.request.id, requestId, admittedRevision: state.request.admittedRevision!, createdAt: state.request.createdAt, sourceOperationId: state.source.id, sourceRequestId: state.source.requestId, sourceSha256 };
     if (canonical(header) !== canonical(expectedHeader)) refuse('s16_ops_staging_plan_invalid');
     const targets: { root: string; stage: Stage; files: Map<string, File>; dirs: Map<string, Directory> }[] = []; let nodes = 0, bytes = 0;
     for (let index = 0; index < stages.length; index++) {
-      const stage = stages[index]!, capture = captures[index]!, role = capture.kind === 'capture_native' ? 'native' : 'point', own = state.source.actions.find(row => row.id === s16StagingOwnershipId(role, capture.id));
+      const stage = stages[index]!, capture = captures[index]!, role = roleOf(capture), own = ownership(capture);
       if (!stage || Object.keys(stage).sort().join(',') !== 'captureActionId,dataSha256,directories,files,ownershipId,role,rootSha256' || stage.role !== role || stage.captureActionId !== capture.id || stage.ownershipId !== own?.id || stage.rootSha256 !== own?.priorSha256 || stage.dataSha256 !== own?.targetSha256 || !Array.isArray(stage.files) || !Array.isArray(stage.directories)) refuse();
       const files = new Map<string, File>(), dirs = new Map<string, Directory>();
-      for (const file of stage.files) { if (!file || Object.keys(file).sort().join(',') !== 'bytes,identity,name,sha256' || typeof file.name !== 'string' || !allowed(role, state.source.pointId!, file.name, false) || !sha(file.identity) || !sha(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > 1073741824 || files.has(file.name) || ++nodes > nodesBound) refuse(); bytes += file.bytes; if (bytes > bytesBound) refuse(); files.set(file.name, file); }
-      for (const dir of stage.directories) { if (!dir || Object.keys(dir).sort().join(',') !== 'identity,name' || typeof dir.name !== 'string' || !allowed(role, state.source.pointId!, dir.name, true) || !sha(dir.identity) || dirs.has(dir.name) || files.has(dir.name) || ++nodes > nodesBound) refuse(); dirs.set(dir.name, dir); }
+      for (const file of stage.files) { if (!file || Object.keys(file).sort().join(',') !== 'bytes,identity,name,sha256' || typeof file.name !== 'string' || !allowed(role, memberScope, file.name, false) || !sha(file.identity) || !sha(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > 1073741824 || files.has(file.name) || ++nodes > nodesBound) refuse(); bytes += file.bytes; if (bytes > bytesBound) refuse(); files.set(file.name, file); }
+      for (const dir of stage.directories) { if (!dir || Object.keys(dir).sort().join(',') !== 'identity,name' || typeof dir.name !== 'string' || !allowed(role, memberScope, dir.name, true) || !sha(dir.identity) || dirs.has(dir.name) || files.has(dir.name) || ++nodes > nodesBound) refuse(); dirs.set(dir.name, dir); }
       if (!dirs.has('')) refuse();
       for (const name of [...files.keys(), ...dirs.keys()]) if (name && !dirs.has(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '')) refuse();
       targets.push({ root: paths[index]!, stage, files, dirs });
@@ -164,7 +192,7 @@ export function retireS16Staging(owner: S16StagingRetirementOwner, requestId: st
     const checkRemaining = () => {
       guard(); for (const { root, stage, files, dirs } of targets) {
         if (!lstatSync(root, { throwIfNoEntry: false })) continue;
-        inspectS16OwnedStage(owner.directory, state.control, state.source, stage.role, stage.captureActionId);
+        inspectCapture(captures.find(row => row.id === stage.captureActionId)!, false);
         const walk = (name: string) => {
           const path = name ? join(root, ...name.split('/')) : root, stat = lstatSync(path);
           if (stat.isDirectory() && !stat.isSymbolicLink()) { if (s16PointEntryIdentity(s16PointEntry(path, true), true) !== dirs.get(name)?.identity) refuse('s16_ops_staging_changed'); for (const child of readdirSync(path)) { if (!segment(child)) refuse(); walk(name ? name + '/' + child : child); } }

@@ -221,9 +221,26 @@ retained, never imported from history.
 
 This is not bare recovery after losing current authority or a disk/device rollback.
 Combined recovery staging is bounded and is retained after completion; it is not
-automatically evicted. `retire-staging` currently selects terminal backup staging,
-not restore staging. Complete restore-staging retirement and compatible aggregate
-service/client lifecycle remain pending. See
+automatically evicted. Explicitly retire only a completed restore's original
+private staging with a separate original retirement request:
+
+```sh
+bun run s16:ops retire-staging --s15 --config /absolute/s15-runtime.json --request-id original_recovery_retirement_id --source-request-id original_restore_id
+```
+
+Its v2 command/plan authenticates original independently receipted root/role
+inodes and the complete source receipt. The immutable removal plan lives outside
+deletion; every file hash/inode and directory identity must match before explicit
+unlink/rmdir plus parent fsync. Retry uses the same retirement/source/configuration
+after interruption, and refuses changed/extra/linked/substituted custody or a
+reappeared root. Partial/discarded/unknown or unowned restores cannot be retired.
+Only staging is removed: current SQL/native/helper/client/credentials/disks,
+canonical repaired bytes, retained points and all original operation/removal
+receipts survive. Complete restore retry still returns its old receipt without
+recreating staging or later-withdrawn bytes. Existing retirement quotas refuse
+oversized custody without automatic eviction or deleting unknown files.
+Compatible aggregate service/client release lifecycle remains pending. See
+[`s16-recovery-staging-retirement/v1`](../contracts/s16-recovery-staging-retirement-v1.md) and
 [`s16-forward-payload-repair/v1`](../contracts/s16-forward-payload-repair-v1.md).
 
 ## Copied-package adoption drill

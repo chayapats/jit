@@ -50,7 +50,7 @@ if (process.env.JIT_S16_FORWARD_SERVICE_CHILD !== '1') test('actual copied servi
       opsWrite(receipt, JSON.stringify({ contract: 's16-forward-service-package-evidence/v1', basis: 'actual_owning_service_and_client_with_scripted_transports', sourceCommit: revision.stdout.toString().trim(), sourceState: status.exitCode === 0 && !status.stdout.length ? 'clean' : 'unverified',
         packageContentHash: manifest.contentHash, dependencyHash: dependencies.dependencyHash, dependencyFiles: dependencies.dependencyFiles, lockHash: manifest.lockHash, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
         platform: process.platform, arch: process.arch, bunVersion: Bun.version, driverSha256: hash(readFileSync(import.meta.path)), compositionFixtureSha256: hash(readFileSync(join(process.cwd(), 'tests/fixtures/s15-composition.ts'))), tests: { pass: 1, fail: 0, assertions: Number(counts[3]), logSha256: hash(report) },
-        coverage: ['shipped_cli_initialization', 'actual_current_owner_session_and_csrf', 'service_dispatched_public_native_work', 'client_upload_and_committed_artifact', 'later_withdrawal', 'later_private_retirement', 'later_unknown_payment_claim', 'unchanged_current_sql_and_usage', 'same_client_and_request_receipts_after_repair', 'no_work_or_unknown_effect_replay'], artifactAfter: 'verified_unchanged', liveAccounts: false, physicalVm: 'scripted', nativeDevices: 'not_exercised', compatibleReleaseLifecycle: 'not_exercised', ownerHostCutover: 'not_exercised' }));
+        coverage: ['shipped_cli_initialization', 'actual_current_owner_session_and_csrf', 'service_dispatched_public_native_work', 'client_upload_and_committed_artifact', 'later_withdrawal', 'later_private_retirement', 'later_unknown_payment_claim', 'unchanged_current_sql_and_usage', 'completed_recovery_staging_retirement', 'same_client_and_request_receipts_after_repair', 'no_work_or_unknown_effect_replay'], artifactAfter: 'verified_unchanged', liveAccounts: false, physicalVm: 'scripted', nativeDevices: 'not_exercised', compatibleReleaseLifecycle: 'not_exercised', ownerHostCutover: 'not_exercised' }));
     }
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 180000);
@@ -151,7 +151,10 @@ if (process.env.JIT_S16_FORWARD_SERVICE_CHILD === '1') test('forward repair retu
   unlinkSync(join(directory, 'runtime/file-bytes', uploads[1]!.id + '.blob'));
   unlinkSync(join(directory, 'runtime/file-bytes', artifacts[1]!.id + '.blob'));
   ctx = openS16ControlMaintenance(config); const before = ctx.sources.map(row => hash(row.database.serialize())), cap = ctx.restorePoint('service_restore', point!.pointId);
-  try { expect((await cap.repair()).state).toBe('complete'); expect(ctx.sources.map(row => hash(row.database.serialize()))).toEqual(before); } finally { await cap.close(); ctx.close(); }
+  try {
+    const recovered = await cap.repair(); expect(recovered.state).toBe('complete'); expect(ctx.sources.map(row => hash(row.database.serialize()))).toEqual(before); await cap.close();
+    expect(ctx.retireStaging('service_retire_recovery', { sourceRequestId: 'service_restore' }).state).toBe('removed'); expect(existsSync(join(directory, 'operations/forward-recovery', recovered.operationId))).toBe(false); expect(ctx.sources.map(row => hash(row.database.serialize()))).toEqual(before);
+  } finally { await cap.close(); ctx.close(); }
   expect(existsSync(join(directory, 'runtime/file-bytes', uploads[0]!.id + '.blob'))).toBe(false);
   await reopenService(); await client.bootstrap();
   expect((await client.computers()).computers.find(row => row.id === 'vm_file_1')).toMatchObject({ scope: { kind: 'private', botId: 'bot' }, retired: true });
