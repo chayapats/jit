@@ -54,8 +54,9 @@ is historical baseline evidence, never the current S16 default.
 The executor reports `source_inputs_passed` only after observed Bun assertions.
 Integrated owning inputs now include the selected operations lifecycle and a
 same-service native dictation/mobile Send/web read/restart journey. Scripted
-native ports do not establish native UI. Package/client/parser artifact import
-and final exact-build execution remain explicit gaps; `deterministicAcceptance`
+native ports do not establish native UI. Package/client/parser qualification is
+selected separately by [ADR 0132](0132-s16-exact-source-delivery-evidence.md).
+Final exact-build execution remains pending; here `deterministicAcceptance`
 and `productAcceptance` stay blocked. This is not completed #430 acceptance.
 The [runbook](../runbooks/s16-cross-client-evidence.md) records commands, finite
 bounds, private receipt meaning and the remaining work.

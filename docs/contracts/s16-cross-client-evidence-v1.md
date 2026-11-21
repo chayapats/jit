@@ -3,7 +3,9 @@
 Status: selected evidence contract under
 [ADR 0121](../adr/0121-s16-executable-cross-client-evidence-matrix.md).
 The source-input validator/executor and integrated owning journey inputs are
-implemented. Complete exact-build execution and artifact-digest import remain pending.
+implemented. The separate [delivery pipeline](s16-delivery-evidence-v1.md)
+qualifies exact-head artifacts; this source-only contract retains blocked artifact
+acceptance. Complete exact-build execution remains pending.
 
 The reviewed matrix retains all S16-AC01–AC22, FR-01–FR-42 and NFR-01–NFR-14
 identifiers. Each required scenario lists acceptance/requirement IDs, issue

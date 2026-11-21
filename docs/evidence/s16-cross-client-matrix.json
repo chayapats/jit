@@ -12,7 +12,10 @@
     "docs/adr/0064-conversational-authority-and-protected-control-plane.md",
     "docs/adr/0074-rakazo-reuse-and-product-convergence.md",
     "docs/adr/0084-s16-grok-style-default-autonomy.md",
-    "docs/adr/0085-remove-telegram-web-push-notifications.md"
+    "docs/adr/0085-remove-telegram-web-push-notifications.md",
+    "docs/adr/0132-s16-exact-source-delivery-evidence.md",
+    "docs/contracts/s16-cross-client-evidence-v1.md",
+    "docs/contracts/s16-delivery-evidence-v1.md"
   ],
   "sourceBaseline": "95a958e99d5903c4804bba79b92e3cfa940e77d2",
   "historicalOwnership": "docs/tickets/S16-rakazo-experience-coverage.json",

@@ -30,7 +30,11 @@ credentials or inherited live flags. Browser profiles enable only the existing
 `JIT_S16_BROWSER_TESTS`, `JIT_S16_DESKTOP_TESTS` and `JIT_BROWSER_LIVE` fixture
 flags. The last flag selects local protected-browser conformance fixtures; it
 does not authenticate a real website. Chromium is the fixed installed Chrome
-path on macOS or `/usr/bin/chromium` on Linux. A missing browser is unavailable;
+path on macOS or `/usr/bin/chromium` on Linux. The fixed task-private
+`.local/s16-evidence-browser/Google Chrome.app` takes precedence on macOS when
+present. It must pass the unchanged complete Google vendor signature guard;
+no profile/account data belongs in this copy. Executable, Info.plist and signed
+resource-index hashes are recorded before/after. A missing or invalid browser is unavailable;
 the executor never downloads it or substitutes native device evidence.
 
 Each declared suite runs separately under the profile's finite wall-clock budget
@@ -81,11 +85,11 @@ the operations integration starts at
 dependency/provenance fix. Shared-client merge resolution retains owner export,
 native notification capability and original upload-creation recovery together.
 This source integration never promotes the independent native-device gate.
-Artifact import for service/web/desktop/mobile/parser digests remains required.
+Exact-head artifact qualification uses the separate delivery command below.
 The integrated operations inputs additionally retain the eighteenth native
 notification journal through protected capture without dispatching APNs/FCM.
-`deterministicAcceptance` and `productAcceptance` therefore stay blocked in this
-initial executor. Real devices, Linux isolation, configured local speech,
+`deterministicAcceptance` and `productAcceptance` stay blocked in the source
+executor. Real devices, Linux isolation, configured local speech,
 subscriptions/accounts and owner-host cutover retain independent pending rows.
 
 Static validation exits 0. An executed partial/blocked acceptance run exits 2
@@ -93,3 +97,25 @@ after writing its receipt. Refused preconditions exit 1 before tests begin.
 Historical receipts are never automatically promoted across revisions. Keep
 raw logs and installation-specific evidence under `.local`; publish only reviewed
 digests/outcomes with their exact source and artifact basis.
+
+## Complete delivery execution
+
+[ADR 0132](../adr/0132-s16-exact-source-delivery-evidence.md) and the
+[delivery contract](../contracts/s16-delivery-evidence-v1.md) govern the separate
+complete execution. Commit and freeze source first. Build both mobile Release
+artifacts using `ops/mobile/main.ts` at that exact head and retain local build
+logs privately. Earlier artifacts are ineligible. No device operation is needed.
+
+```sh
+bun ops/evidence/s16-delivery.ts accept --out "$PWD/.local/s16-evidence/delivery-001" --ios "$PWD/.local/releases/ios" --android "$PWD/.local/releases/android"
+```
+
+The command qualifies native seals and a checked Git archive, builds/independently
+verifies desktop, and executes every reviewed profile with the actual bundled
+desktop fixtures and retained tested lifecycle package. Qualified service public
+web bytes must equal the source browser bundle. Native stays build-only. Source,
+dependencies, seals and re-observed logs are checked again before a successful
+delivery receipt. Refusal exits 1 with private diagnostics and no success receipt.
+A complete join exits 0 for deterministic acceptance; all five independent
+product gates stay pending. Source-only execution retains exit 2. No result
+approves production deployment or owner-host adoption.

@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { RELEASE_CONTRACT } from 'schway/host';
 import { spawnRunner } from '../../src/ops/supervisor';
 import { readS16EvidenceMatrix, s16EvidencePath, type S16EvidenceMatrix, type S16EvidenceProfile } from './s16-matrix';
-import { s16FixtureParserTools, s16FixturePath } from './s16-fixture-tools';
+import { s16FixtureBrowser, s16FixtureParserTools, s16FixturePath } from './s16-fixture-tools';
+import { verifyNativeDesktop } from '../../src/s16/desktop/installation';
+import { buildNativeDesktop } from '../desktop/build';
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const root = realpathSync(resolve(import.meta.dir, '../..'));
@@ -79,12 +81,14 @@ function dependencies(checkout: string) {
 async function fingerprint(matrix: S16EvidenceMatrix) {
   const commit = git(root, ['rev-parse', 'HEAD']); if (!/^[a-f0-9]{40}$/.test(commit)) throw Error('s16_matrix_source_invalid');
   const status = git(root, ['status', '--porcelain', '--untracked-files=normal']);
+  const browser = await s16FixtureBrowser(root);
   return { commit, state: status === '' ? 'clean' : 'changed', matrixSha256: hash(readFileSync(join(root, matrixName))),
     documents: [...matrix.governingDocuments, matrix.historicalOwnership].map(path => ({ path, sha256: hash(readFileSync(s16EvidencePath(root, path)!)) })),
     lockSha256: hash(readFileSync(join(root, 'bun.lock'))), dependencies: dependencies(root),
     engine: { contract: RELEASE_CONTRACT, revision: 'unverified', basis: 'executing_public_host_contract_and_vendored_archive' },
     vendor: readdirSync(join(root, 'vendor')).sort().map(name => ({ name, sha256: hash(readFileSync(s16EvidencePath(root, 'vendor/' + name)!)) })),
-    platform: process.platform, arch: process.arch, bunVersion: Bun.version, bunSha256: hash(readFileSync(process.execPath)), fixtureParserTools: await s16FixtureParserTools() };
+    platform: process.platform, arch: process.arch, bunVersion: Bun.version, bunSha256: hash(readFileSync(process.execPath)), fixtureParserTools: await s16FixtureParserTools(),
+    fixtureBrowser: browser ? { state: 'recorded' as const, ...browser.evidence } : { state: 'unavailable' as const } };
 }
 function freshOutput(path: string): string {
   if (!isAbsolute(path) || resolve(path) !== path || !path.startsWith(join(root, '.local') + '/') || existsSync(path)) throw Error('s16_matrix_output_invalid');
@@ -96,21 +100,33 @@ function freshOutput(path: string): string {
   }
   mkdirSync(path, { mode: 0o700 }); return path;
 }
-async function executeProfile(profile: S16EvidenceProfile, out: string): Promise<S16ProfileEvidence> {
+/** New private evidence namespace only; no existing destination or linked parent is eligible. */
+export function createS16EvidenceOutput(path: string): string { return freshOutput(path); }
+/** Exact current source/tool inputs, without executing a product or accepting an evidence assertion. */
+export async function observeS16EvidenceSource() { return fingerprint(readS16EvidenceMatrix(root)); }
+/** Internally prepared delivery input. No matrix field or inherited environment can set these flags. */
+export interface S16EvidenceDelivery { desktopArtifact: string }
+async function executeProfile(profile: S16EvidenceProfile, out: string, delivery?: S16EvidenceDelivery): Promise<S16ProfileEvidence> {
   const suites: S16SuiteEvidence[] = [], privateRoot = join(out, profile.id); mkdirSync(privateRoot, { mode: 0o700 });
   for (const directory of ['home', 'tmp', 'cache']) mkdirSync(join(privateRoot, directory), { mode: 0o700 });
   const env: Record<string, string> = { PATH: s16FixturePath(), HOME: join(privateRoot, 'home'), TMPDIR: join(privateRoot, 'tmp'), XDG_CACHE_HOME: join(privateRoot, 'cache'), NO_COLOR: '1', TZ: 'UTC' };
-  const browserPath = process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/chromium';
-  if (profile.kind === 'browser') Object.assign(env, { JIT_S16_BROWSER_TESTS: '1', JIT_S16_DESKTOP_TESTS: '1', JIT_BROWSER_LIVE: '1', JIT_BROWSER_EXECUTABLE: browserPath });
+  const browser = profile.kind === 'browser' ? await s16FixtureBrowser(root) : null;
+  if (browser) Object.assign(env, { JIT_S16_BROWSER_TESTS: '1', JIT_S16_DESKTOP_TESTS: '1', JIT_BROWSER_LIVE: '1', JIT_BROWSER_EXECUTABLE: browser.path });
   for (const [index, suite] of profile.suites.entries()) {
-    if (!s16EvidencePath(root, suite) || profile.kind === 'browser' && !existsSync(browserPath)) {
+    if (!s16EvidencePath(root, suite) || profile.kind === 'browser' && !browser) {
       suites.push({ suite, state: 'unavailable', exitCode: null, observations: null, logSha256: null, logBytes: 0 }); continue;
     }
     // No shell. Both test streams enter the existing process-group/output/time bounded runner.
     const argv = ['test', '--timeout', '30000', './' + suite];
     const wrapper = `const p=Bun.spawn([process.execPath,...${JSON.stringify(argv)}],{stdin:'ignore',stdout:1,stderr:1});process.exit(await p.exited);`;
+    const suiteEnv = { ...env };
+    if (delivery && profile.id === 'desktop_web') suiteEnv.JIT_S16_DESKTOP_ARTIFACT = delivery.desktopArtifact;
+    if (delivery && suite === 'tests/s16-ops-service-release.test.ts') {
+      suiteEnv.JIT_S16_SERVICE_RELEASE_RECEIPT = join(privateRoot, `${index}-service-release.json`);
+      suiteEnv.JIT_S16_SERVICE_RELEASE_PACKAGE = join(privateRoot, `${index}-service-package`);
+    }
     let result;
-    try { result = await spawnRunner([process.execPath, '--eval', wrapper], { cwd: root, env, timeoutMs: profile.timeoutMs }); }
+    try { result = await spawnRunner([process.execPath, '--eval', wrapper], { cwd: root, env: suiteEnv, timeoutMs: profile.timeoutMs }); }
     catch { suites.push({ suite, state: 'unavailable', exitCode: null, observations: null, logSha256: null, logBytes: 0 }); continue; }
     const observations = observeS16BunTests(result.stdout), logBytes = Buffer.byteLength(result.stdout);
     const state = result.timedOut ? 'timed_out' : logBytes >= outputLimit ? 'output_bound' : result.exitCode !== 0 ? 'failed' : !observations ? 'unobserved' : observations.skip ? 'skipped' : observations.fail ? 'failed' : 'passed';
@@ -121,19 +137,32 @@ async function executeProfile(profile: S16EvidenceProfile, out: string): Promise
 }
 
 /** Runs selected reviewed source profiles; all omitted, missing and external requirements stay in its private receipt. */
-export async function runS16CrossClientEvidence(profiles: readonly string[], output: string) {
+export async function runS16CrossClientEvidence(profiles: readonly string[], output: string, delivery?: S16EvidenceDelivery) {
   const matrix = readS16EvidenceMatrix(root);
   if (!profiles.length || new Set(profiles).size !== profiles.length || profiles.some(id => !matrix.profiles.some(profile => profile.id === id))) throw Error('s16_matrix_profile_invalid');
   const before = await fingerprint(matrix); if (before.state !== 'clean') throw Error('s16_matrix_clean_source_required');
+  if (delivery && (!isAbsolute(delivery.desktopArtifact) || resolve(delivery.desktopArtifact) !== delivery.desktopArtifact || !delivery.desktopArtifact.startsWith(join(root, '.local') + '/'))) throw Error('s16_matrix_delivery_source_changed');
+  const desktop = delivery ? verifyNativeDesktop(delivery.desktopArtifact) : null;
+  if (desktop && (desktop.source.commit !== before.commit || desktop.source.dirty || desktop.source.lockHash !== before.lockSha256)) throw Error('s16_matrix_delivery_source_changed');
   const out = freshOutput(output), results: S16ProfileEvidence[] = [];
-  for (const name of profiles) results.push(await executeProfile(matrix.profiles.find(profile => profile.id === name)!, out));
+  if (desktop) {
+    const qualified = join(out, 'desktop-qualification');
+    const expected = await buildNativeDesktop({ source: root, output: qualified });
+    if (expected.id !== desktop.id) throw Error('s16_matrix_delivery_source_changed');
+    rmSync(qualified, { recursive: true, force: false });
+  }
+  for (const name of profiles) results.push(await executeProfile(matrix.profiles.find(profile => profile.id === name)!, out, delivery));
   let after: Awaited<ReturnType<typeof fingerprint>> | null = null;
   try { after = await fingerprint(matrix); } catch { /* A removed/corrupt source or dependency cannot certify the earlier input. */ }
   const unchanged = JSON.stringify(before) === JSON.stringify(after), assessment = assessS16MatrixEvidence(matrix, results);
-  const receipt = { contract: 's16-cross-client-evidence/v1', basis: 'executed_source_profiles_with_scripted_ports', source: before, sourceAfter: unchanged ? 'verified_unchanged' : 'changed',
+  let deliveryAfter = 'not_selected';
+  if (delivery) { try { deliveryAfter = verifyNativeDesktop(delivery.desktopArtifact).id === desktop?.id ? 'verified_unchanged' : 'changed'; } catch { deliveryAfter = 'changed'; } }
+  const receipt = { contract: delivery ? 's16-cross-client-evidence/v2' : 's16-cross-client-evidence/v1', basis: 'executed_source_profiles_with_scripted_ports', source: before, sourceAfter: unchanged ? 'verified_unchanged' : 'changed',
     execution: { profiles: [...profiles], argv: 'bun test --timeout 30000 ./<reviewed-suite>', outputBoundBytes: outputLimit, timeoutScope: 'per_suite_process_group', profileResults: results },
     artifacts: ['service_package', 'web_bundle', 'desktop_client', 'mobile_client', 'parsers'].map(kind => ({ kind, state: 'unrecorded', sha256: null })),
-    ...assessment, ...(unchanged ? {} : { deterministicInputs: 'blocked', sourceBlocker: 'source_or_dependencies_changed' }), externalEvidence: matrix.externalEvidence };
+    ...assessment, ...(delivery ? { delivery: { desktopSha256: desktop!.id, desktopSource: desktop!.source.commit, after: deliveryAfter, service: 'current_lifecycle_package_capture_requested' } } : {}),
+    ...(deliveryAfter === 'changed' ? { deterministicInputs: 'blocked', deliveryBlocker: 'desktop_artifact_changed' } : {}),
+    ...(unchanged ? {} : { deterministicInputs: 'blocked', sourceBlocker: 'source_or_dependencies_changed' }), externalEvidence: matrix.externalEvidence };
   writeFileSync(join(out, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); return receipt;
 }
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnRunner } from '../../src/ops/supervisor';
 
@@ -51,4 +51,25 @@ export async function s16FixtureParserTools() {
       tools: tools.map(({ name, sha256 }) => ({ name, sha256 })), pythonVersion: value.pythonVersion as string, pillowVersion: value.pillowVersion as string,
       pillow: s16FixtureLibraryHash(library), popplerVersionSha256: hash(poppler.stdout), sanitizerSha256: hash(readFileSync(new URL('../box/sanitize', import.meta.url))) };
   } catch { return { state: 'unavailable' as const, basis: 'actual_host_fixture_parser_tools_without_isolation' as const }; }
+}
+
+/** Verified fixed browser input, with no profile/session or account data. The path stays private. */
+export async function s16FixtureBrowser(root: string) {
+  const candidate = join(root, '.local/s16-evidence-browser/Google Chrome.app/Contents/MacOS/Google Chrome');
+  const privateCopy = process.platform === 'darwin' && existsSync(candidate);
+  const path = process.platform === 'darwin' ? privateCopy ? candidate : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/chromium';
+  try {
+    const entry = new URL('../../src/s16/desktop/executable.ts', import.meta.url).pathname;
+    // Retain the actual installed launcher's complete vendor signature guard.
+    const wrapper = `import{desktopBrowser}from${JSON.stringify(entry)};console.log(JSON.stringify({path:desktopBrowser(${JSON.stringify(path)})}));`;
+    const checked = await spawnRunner([process.execPath, '--eval', wrapper], { cwd: '/', env: { PATH: s16FixturePath() }, timeoutMs: 30000 });
+    if (checked.exitCode || checked.timedOut || checked.stdout.length > 8192) return null;
+    const value = JSON.parse(checked.stdout);
+    if (!value || Object.keys(value).join(',') !== 'path' || typeof value.path !== 'string' || !value.path.startsWith('/') || /[\u0000-\u001f]/.test(value.path)) return null;
+    const boundedHash = (path: string, limit: number) => { const info = lstatSync(path); if (!info.isFile() || info.isSymbolicLink() || info.size > limit) throw Error('s16_fixture_browser_invalid'); return hash(readFileSync(path)); };
+    const executableSha256 = boundedHash(value.path, 134217728);
+    const bundle = dirname(dirname(dirname(value.path)));
+    return { path: value.path as string, evidence: { basis: 'verified_fixed_fixture_browser' as const, source: privateCopy ? 'task_private_vendor_copy' as const : 'installed_browser' as const, executableSha256,
+      ...(process.platform === 'darwin' ? { signature: 'mac_chrome_vendor_verified' as const, infoSha256: boundedHash(join(bundle, 'Contents/Info.plist'), 1048576), resourcesSha256: boundedHash(join(bundle, 'Contents/_CodeSignature/CodeResources'), 4194304) } : { signature: 'not_applicable' as const }) } };
+  } catch { return null; }
 }
