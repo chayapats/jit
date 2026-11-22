@@ -24,7 +24,7 @@ export function useUi(locale: Locale) {
       buttonText: { color: colors.onAccent, fontSize: 16, lineHeight: 24, fontWeight: "600", textAlign: "center" },
       secondary: { backgroundColor: "transparent", borderColor: colors.line, borderWidth: 1 }, secondaryText: { color: colors.text, fontWeight: "500" },
       compact: { minHeight: 44, paddingVertical: 9, paddingHorizontal: 18, alignSelf: "flex-start" }, composerRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
-      dock: { paddingHorizontal: 12, paddingTop: 6, paddingBottom: 8, maxHeight: "62%" },
+      dock: { flexGrow: 0, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 8, maxHeight: "62%" },
       disabled: { opacity: 0.4 }, actions: { gap: 10, flexDirection: "row", flexWrap: "wrap" },
       tabs: { paddingHorizontal: 6, paddingVertical: 6, gap: 2, flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.line, backgroundColor: colors.background },
       tab: { flex: 1, minHeight: 48, paddingVertical: 8, paddingHorizontal: 2, alignItems: "center", justifyContent: "center", borderRadius: 999 },
