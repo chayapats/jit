@@ -89,3 +89,41 @@ acceptance, live model image challenge, protected website/account workflow,
 physical microphone/push/native UI or owner-host cutover. Those retain their
 separate #340/#341/#426/#431/#432 gates. No runtime default, policy, private scope,
 service configuration or owner installation was changed.
+
+## Current convergence-source supplement
+
+The owning parser and live kernel observation were repeated at clean
+`beab27ae9c276c200189c6e744e195ffcae70db7`, the source of the completed
+[deterministic delivery proof](s16-delivery-proof.md). The independently checked
+Git archive was `9f01cffe5f472511f8ecb211f50e8d8c16d9e7ad73d92c65e8076df34759b319`:
+1,901 files and 47,080,233 bytes. Its transferred bytes and Linux Bun pin were
+verified before execution. Frozen root installation again disabled scripts.
+
+This run selected the same existing generation-3 manifest/configuration above,
+without rebuilding or pulling an image. The complete archived `ops/box` build
+context was unchanged between the two source revisions. It does not relabel the
+earlier image build as a new build.
+
+On the disposable Ubuntu 24.04.5 arm64 host, kernel `6.8.0-142-generic`, Podman
+4.9.3/rootless UID 1001, the actual existing opt-in suite completed:
+**1 pass, 0 fail, 7 assertions, 1.499 seconds**. PDF source text, sanitized
+PNG/JPEG output and encrypted-PDF refusal retained their original assertions.
+
+A separate current-source driver required complete actual kernel observations
+for all three PDF/PNG/JPEG jobs, with zero missed observations. All three matched
+every control in the table above, including the actual pinned image, finite
+cgroups, no effective capabilities, no-new-privileges, seccomp, read-only root,
+noexec scratch, sole read-only input bind and network mode `none`/zero IPv4 routes.
+
+| Current-source record | SHA-256 |
+| --- | --- |
+| Test result log | `b33910df5b65ec6e08a2eb6d6084a065726f26f9dca55f1644d3ba5805932d6f` |
+| Actual process controls receipt | `daa867aa6157e958fbbb31db1a5c49cb1ea6a2cf98865f014bbfa367be33328e` |
+| Observation driver | `7c1fa471bf77270b51b769d6a587227acedce7e237ed4df6bbc4cb0f271da2e1` |
+| Source input hashes | `c6662590bb65f5fadda9548e74c14562a198938a67099192bd64ed2c42f6f05d` |
+
+Selected source inputs matched again afterwards; both owning cleanup paths left
+an empty container inventory. The task-owned VM was shut down and its `Stopped`
+state read back. The original source's receipt remains separate. This supplement
+adds exact current-source parser evidence without establishing a nested working
+VM, model vision, private account, physical device or owner-host cutover.

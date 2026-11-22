@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { chmodSync, constants, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RELEASE_CONTRACT } from 'schway/host';
 import { buildPackage, installArtifactDependencies, readDependencyRecord, validateArtifact } from '../ops/package/bun-build';
@@ -23,7 +23,9 @@ const env = { PATH: dirname(process.execPath) + ':/usr/bin:/bin:/usr/sbin:/sbin'
 const hash = (value: string | Uint8Array) => new Bun.CryptoHasher('sha256').update(value).digest('hex');
 beforeAll(async () => {
   const receipt = process.env.JIT_S16_SERVICE_RELEASE_RECEIPT;
+  const retainedPackage = process.env.JIT_S16_SERVICE_RELEASE_PACKAGE;
   if (receipt && (!isAbsolute(receipt) || existsSync(receipt))) throw Error('fixture_receipt_must_be_fresh_absolute_path');
+  if (retainedPackage && (!receipt || !isAbsolute(retainedPackage) || resolve(retainedPackage) !== retainedPackage || dirname(retainedPackage) !== dirname(receipt) || !retainedPackage.startsWith(join(realpathSync(process.cwd()), '.local') + '/') || existsSync(retainedPackage))) throw Error('fixture_package_must_be_fresh_private_output');
   if (receipt) opsDirectory(dirname(receipt));
   root = realpathSync(mkdtempSync(join(tmpdir(), 'jit-service-release-'))); prefix = join(root, 'opt/jit-s15'); bun = join(prefix, 'bin/bun'); mkdirSync(dirname(bun), { recursive: true }); copyFileSync(process.execPath, bun, constants.COPYFILE_FICLONE); chmodSync(bun, 0o755);
   for (const [name, revision] of [['a', '23cfb85d1051ab52b42fefd421c85cd86388f6c3'], ['b', null]] as const) {
@@ -43,6 +45,13 @@ afterAll(() => {
   try {
     for (const pkg of packages) { const checked = validateArtifact(pkg.path, { runtime: true }); expect(checked.ok && checked.manifest?.contentHash === pkg.hash && readDependencyRecord(pkg.path)?.dependencyHash === pkg.dependencyHash).toBe(true); }
     const receipt = process.env.JIT_S16_SERVICE_RELEASE_RECEIPT;
+    const retainedPackage = process.env.JIT_S16_SERVICE_RELEASE_PACKAGE;
+    if (retainedPackage) {
+      const current = packages[1]; if (!current) throw Error('fixture_current_package_missing');
+      cpSync(current.path, retainedPackage, { recursive: true, force: false, errorOnExist: true });
+      const checked = validateArtifact(retainedPackage, { runtime: true });
+      expect(checked.ok && checked.manifest?.contentHash === current.hash && readDependencyRecord(retainedPackage)?.dependencyHash === current.dependencyHash).toBe(true);
+    }
     if (receipt) {
       const source = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { stdout: 'pipe', stderr: 'ignore' }), status = Bun.spawnSync(['git', 'status', '--porcelain'], { stdout: 'pipe', stderr: 'ignore' });
       opsWrite(receipt, JSON.stringify({ contract: 's16-service-release-artifact-evidence/v1', sourceCommit: source.stdout.toString().trim(), sourceState: source.exitCode === 0 && status.exitCode === 0 && !status.stdout.length && packages[1]?.sourceCommit === source.stdout.toString().trim() ? 'clean' : 'unverified',

@@ -1,4 +1,4 @@
-import { constants, closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { constants, chmodSync, closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { desktopService } from "./boundary";
@@ -55,6 +55,7 @@ export function sealNativeDesktop(directory: string, metadata: Omit<NativeDeskto
   const base = core({ contract: "s16-desktop-native-release/v1", ...metadata, files: inventory(directory) });
   const manifest = { ...base, id: hash(JSON.stringify(base)) };
   writeFileSync(join(directory, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o644 });
+  chmodSync(join(directory, "manifest.json"), 0o644);
   return verifyNativeDesktop(directory);
 }
 
