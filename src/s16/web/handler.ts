@@ -8,6 +8,8 @@ import { buildDesktopPackage, desktopDocument } from "../desktop/release";
 import { staticAssets } from "../../web-assets";
 
 /** Bun-built React surface over the protected client API. No inline script, second auth or server. */
+/** The public package inventory: client, style, worklet, two icons, manifest, two shells, two typefaces and their licence text. */
+export const s16PublicAssetCount = 11;
 export async function createS16WebHandler(authenticate: (request: Request) => Promise<Response>, options: { origin?: string } = {}): Promise<(request: Request) => Promise<Response>> {
   const built = await Bun.build({ entrypoints: [new URL("./app.tsx", import.meta.url).pathname], target: "browser", minify: true, metafile: true, define: { "process.env.NODE_ENV": JSON.stringify("production") } });
   if (!built.success || built.outputs.length !== 1 || !built.metafile) throw new AppError("client_build_unavailable", 503);
@@ -19,6 +21,7 @@ export async function createS16WebHandler(authenticate: (request: Request) => Pr
   const fonts = [{ name: "inter.woff2", body: font("Inter-Variable.woff2"), contentType: "font/woff2" }, { name: "noto-sans-thai.woff2", body: font("NotoSansThai-Variable.woff2"), contentType: "font/woff2" },
     { name: "font-licenses.txt", body: new TextEncoder().encode(["OFL-Inter.txt", "OFL-NotoSansThai.txt"].map(file => readFileSync(new URL(`../../web-assets/fonts/${file}`, import.meta.url), "utf8")).join("\n\n")), contentType: "text/plain; charset=utf-8" }];
   const packaged = buildDesktopPackage({ script, style, worklet: voiceWorklet, fonts, icons: ([192, 512] as const).map(size => ({ size, body: staticAssets.get(`icon-${size}.png`)!.body })) });
+  if (packaged.release.assets.length !== s16PublicAssetCount) throw new AppError("client_build_unavailable", 503);
   const packagedStyle = new TextDecoder().decode(packaged.bodies.get(packaged.release.assets.find(asset => asset.path.endsWith("/style.css"))!.path)!);
   const publicAssets = new Map(packaged.release.assets.map(asset => [asset.path, asset]));
   const worker = s16WorkerScript({ release: packaged.release, csp: headers["Content-Security-Policy"] });

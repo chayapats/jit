@@ -129,7 +129,7 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
         {pending.map(entry => <View key={entry.requestId} style={ui.styles.card}>
           <Button ui={ui} label={ui.t("s16.chat.recover")} disabled={busy} onPress={() => { void run(() => recover(entry)); }} />
           {absent === entry.requestId && <><UiText ui={ui}>{ui.t("s16.mobile.originalAbsent")}</UiText>
-            {commands.canRetry(entry) ? <Button ui={ui} label={ui.t("s16.chat.resend")} disabled={busy} onPress={() => { void run(async () => { await commands.retry(entry.requestId); checkMobileIntent(intent); drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }); }} />
+            {commands.canRetry(entry) ? <Button ui={ui} label={ui.t("s16.chat.resend")} disabled={busy} onPress={() => { void run(async () => { await commands.retry(entry.requestId); checkMobileIntent(intent); if (entry.kind === "message") drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }); }} />
             : <Button ui={ui} secondary label={ui.t("s16.mobile.composeNew")} disabled={busy} onPress={() => { void run(async () => { await commands.forgetAbsent(entry); checkMobileIntent(intent); drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); }); }} />}
           </>}
         </View>)}

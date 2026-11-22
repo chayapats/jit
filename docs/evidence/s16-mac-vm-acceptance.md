@@ -91,7 +91,9 @@ were controlled loopback.
 ## Packaged iOS client on the simulator (#426)
 
 Each build came from `bun ops/mobile/main.ts build` at a clean exact commit and
-passed `verify`. The observed build is the last one.
+passed `verify`. The observed build is the last one. After it, review changed one
+condition in the mobile retry handler (a retried approval no longer clears an
+unrelated draft); that line was typechecked but not observed on the simulator.
 
 | Artifact ID | Source |
 | --- | --- |

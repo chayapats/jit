@@ -2,31 +2,37 @@ import type { ReactNode } from "react";
 
 /**
  * Bounded Markdown for Bot replies. It builds React elements only: no HTML is parsed or injected, images never
- * load, and a link opens only `http(s)` in a new tab with its real host shown beside different link text, so
- * model output cannot disguise a destination. Unsupported syntax stays visible as written.
+ * load, and a link opens only `http(s)` in a new tab. Its real host is shown beside the link text unless that
+ * text is itself an address on the same host, so model output cannot disguise a destination. Nesting is
+ * budgeted: deeper quotes, lists and emphasis stay visible as plain text instead of recursing. Unsupported
+ * syntax stays visible as written.
  */
+const maxDepth = 6;
 const linkProps = { target: "_blank", rel: "noopener noreferrer nofollow" } as const;
 const host = (url: string) => { try { return new URL(url).host; } catch { return ""; } };
+/** True only when the visible label is an address whose host is the destination's host. */
+const namesHost = (label: string, url: string) => { const target = host(url), text = label.trim(); return !!target && !/\s/.test(text) && (host(text) === target || host("https://" + text) === target); };
 
-type Rule = [pattern: RegExp, render: (match: RegExpExecArray, key: string) => ReactNode];
+type Rule = [pattern: RegExp, render: (match: RegExpExecArray, key: string, depth: number) => ReactNode];
 const rules: Rule[] = [
   [/`([^`\n]+)`/, (m, key) => <code key={key}>{m[1]}</code>],
-  [/\[([^\]\n]{1,300})\]\((https?:\/\/[^\s)]{1,2000})\)/, (m, key) => <span key={key}><a href={m[2]} title={m[2]} {...linkProps}>{inline(m[1]!, key)}</a>{m[1] !== m[2] && host(m[2]!) && !m[1]!.includes(host(m[2]!)) ? <span className="md-host"> ({host(m[2]!)})</span> : null}</span>],
+  [/\[([^\]\n]{1,300})\]\((https?:\/\/[^\s)]{1,2000})\)/, (m, key, depth) => <span key={key}><a href={m[2]} title={m[2]} {...linkProps}>{inline(m[1]!, key, depth + 1)}</a>{host(m[2]!) && !namesHost(m[1]!, m[2]!) ? <span className="md-host"> ({host(m[2]!)})</span> : null}</span>],
   [/https?:\/\/[^\s<>()]{1,2000}[^\s<>().,;:!?'"]/, (m, key) => <a key={key} href={m[0]} {...linkProps}>{m[0]}</a>],
-  [/\*\*([^\n]+?)\*\*/, (m, key) => <strong key={key}>{inline(m[1]!, key)}</strong>],
-  [/~~([^\n]+?)~~/, (m, key) => <del key={key}>{inline(m[1]!, key)}</del>],
-  [/\*([^\s*][^*\n]*?)\*/, (m, key) => <em key={key}>{inline(m[1]!, key)}</em>],
+  [/\*\*([^\n]+?)\*\*/, (m, key, depth) => <strong key={key}>{inline(m[1]!, key, depth + 1)}</strong>],
+  [/~~([^\n]+?)~~/, (m, key, depth) => <del key={key}>{inline(m[1]!, key, depth + 1)}</del>],
+  [/\*([^\s*][^*\n]*?)\*/, (m, key, depth) => <em key={key}>{inline(m[1]!, key, depth + 1)}</em>],
 ];
 
 /** Inline spans: the earliest matching rule wins, and its text is parsed again for nested emphasis. */
-function inline(text: string, key: string): ReactNode[] {
+function inline(text: string, key: string, depth = 0): ReactNode[] {
+  if (depth > maxDepth) return [text];
   const out: ReactNode[] = []; let rest = text, index = 0;
   while (rest) {
     let best: { match: RegExpExecArray; rule: Rule } | null = null;
     for (const rule of rules) { const match = rule[0].exec(rest); if (match && (!best || match.index < best.match.index)) best = { match, rule }; }
     if (!best) { out.push(rest); break; }
     if (best.match.index) out.push(rest.slice(0, best.match.index));
-    out.push(best.rule[1](best.match, `${key}.${index++}`)); rest = rest.slice(best.match.index + best.match[0].length);
+    out.push(best.rule[1](best.match, `${key}.${index++}`, depth)); rest = rest.slice(best.match.index + best.match[0].length);
   }
   return out;
 }
@@ -38,18 +44,19 @@ const item = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/, quote = /^\s{0,3}>\s?(.*)$/, d
 const cells = (line: string) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim());
 
 type Item = { indent: number; ordered: boolean; text: string };
-function list(items: Item[], key: string): ReactNode {
+function list(items: Item[], key: string, depth = 0): ReactNode {
   const base = items[0]!.indent, ordered = items[0]!.ordered, children: ReactNode[] = [];
   for (let index = 0; index < items.length;) {
     const current = items[index]!; let end = index + 1;
-    while (end < items.length && items[end]!.indent > base) end++;
-    children.push(<li key={`${key}.${index}`}>{lines(current.text, `${key}.${index}`)}{end > index + 1 ? list(items.slice(index + 1, end), `${key}.${index}n`) : null}</li>);
+    // Past the budget deeper items join this level instead of opening another list.
+    while (depth < maxDepth && end < items.length && items[end]!.indent > base) end++;
+    children.push(<li key={`${key}.${index}`}>{lines(current.text, `${key}.${index}`)}{end > index + 1 ? list(items.slice(index + 1, end), `${key}.${index}n`, depth + 1) : null}</li>);
     index = end;
   }
   return ordered ? <ol key={key}>{children}</ol> : <ul key={key}>{children}</ul>;
 }
 
-function blocks(text: string): ReactNode[] {
+function blocks(text: string, depth = 0): ReactNode[] {
   const source = text.replace(/\r\n?/g, "\n").split("\n"), out: ReactNode[] = [];
   for (let index = 0; index < source.length;) {
     const line = source[index]!, key = `b${index}`, opened = fence.exec(line);
@@ -65,7 +72,7 @@ function blocks(text: string): ReactNode[] {
     if (quote.test(line)) {
       const body: string[] = [];
       while (index < source.length && quote.test(source[index]!)) body.push(quote.exec(source[index++]!)![1]!);
-      out.push(<blockquote key={key}>{blocks(body.join("\n"))}</blockquote>); continue;
+      out.push(<blockquote key={key}>{depth < maxDepth ? blocks(body.join("\n"), depth + 1) : <p>{body.join("\n")}</p>}</blockquote>); continue;
     }
     if (item.test(line)) {
       const items: Item[] = [];

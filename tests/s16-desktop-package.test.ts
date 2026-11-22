@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { buildDesktopPackage, desktopDocument, desktopLimits } from "../src/s16/desktop/release";
-import { createS16WebHandler } from "../src/s16/web/handler";
+import { createS16WebHandler, s16PublicAssetCount } from "../src/s16/web/handler";
 import { desktopLaunchUrl, desktopService } from "../src/s16/desktop/boundary";
 
 test("public package identity covers every byte and retains the exact neutral desktop manifest", () => {
@@ -66,6 +66,7 @@ test("actual bundle ships public immutable inventory but keeps session, legacy a
   expect(auth).toBe(0);
   // The Jit typefaces and their licence texts ship in the package; the served stylesheet names them by content address only.
   const fonts = release.assets.filter((asset: { path: string }) => asset.path.endsWith(".woff2")).map((asset: { path: string }) => asset.path);
+  expect(release.assets).toHaveLength(s16PublicAssetCount); expect(s16PublicAssetCount).toBe(11);
   expect(fonts).toHaveLength(2); expect(release.assets.some((asset: { path: string }) => asset.path.endsWith("/font-licenses.txt"))).toBe(true);
   const packagedStyle = await (await request(release.assets.find((asset: { path: string }) => asset.path.endsWith("/style.css")).path)).text();
   for (const path of fonts) expect(packagedStyle).toContain(`url("${path}")`);
