@@ -334,7 +334,9 @@ fi
 
 step=release
 next='publish/verify jit-install.tar.gz and its SHA-256 sidecar, or run ./install.sh from a release tarball'
+release_downloaded=false
 if [ -z "$source_dir" ]; then
+  release_downloaded=true
   curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 "$release_url/jit-install.tar.gz" -o "$scratch/jit-install.tar.gz" || failed
   curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/jit-install.tar.gz.sha256" -o "$scratch/checksum" || failed
   digest=$(awk 'NR==1 {print $1}' "$scratch/checksum")
@@ -356,6 +358,10 @@ fi
 input_owner=${SUDO_UID:-0}
 # Copy only package inputs from a checkout; never include user node_modules,
 # bunfig, .env, .local or Git metadata in the privileged bootstrap.
+# A refused local source gets its own remedy; the download remedy would mislead here.
+# A downloaded release lives in a temporary directory, so it keeps the download remedy.
+release_next=$next
+[ "$release_downloaded" = true ] || next="make the local source at $source_dir trusted: every file and parent directory must belong to root or to you, with no symlinks and no group/other write permission (for a checkout: chmod -R go-w \"$source_dir\"), or run ./install.sh from a release tarball"
 trusted_input "$source_dir/ops/package"
 mkdir -m 755 "$scratch/source"
 for entry in package.json bun.lock src ops/package ops/box vendor LICENSE NOTICE third_party; do
@@ -373,6 +379,7 @@ for entry in manifest.json dependencies.json node_modules; do
 done
 unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -uid 0 -o -perm /022 \) -print -quit)
 [ -z "$unsafe" ] || failed
+next=$release_next
 source_dir=$scratch/source
 chmod 755 "$scratch"
 # The installer imports the public engine contract before package staging. A
