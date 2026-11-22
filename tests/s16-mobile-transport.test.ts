@@ -69,6 +69,21 @@ test("authenticated native requests retain exact target, empty cookie jar and ze
   substitute = ""; length = "999999999"; await expect(native.fetch(request())).rejects.toMatchObject({ code: "mobile_response_limit" }); expect(calls).toHaveLength(3);
 });
 
+test("the React Native no-store cache-buster never reaches the protected service", async () => {
+  const store = secureStore(); await seed(store, origin); const calls: { url: string; init: RequestInit }[] = [];
+  const native = new MobileTransport({ origin, store: store.port, fetch: async (url, init) => { calls.push({ url, init }); return response(url, Response.json({ safe: true })); } });
+  await native.restore();
+  // whatwg-fetch (React Native) rewrites `new Request(url, { cache: "no-store" })` to end in `_=<time>` for GET.
+  await native.fetch(new Request(origin + "/api/s16/client/bootstrap?_=1795344554092"));
+  await native.fetch(new Request(origin + "/api/s16/client/protected-browser/frame?generation=3&_=1795344554092"));
+  // Anything else is forwarded exactly: another name, a non-numeric value, a parameter that is not last, or a POST.
+  await native.fetch(new Request(origin + "/api/s16/client/bootstrap?_=abc"));
+  await native.fetch(new Request(origin + "/api/s16/client/bootstrap?_=1&generation=3"));
+  await native.fetch(new Request(origin + "/api/s16/client/requests/work/stop?_=1795344554092", { method: "POST", body: "{}" }));
+  expect(calls.map(call => call.url)).toEqual([origin + "/api/s16/client/bootstrap", origin + "/api/s16/client/protected-browser/frame?generation=3", origin + "/api/s16/client/bootstrap?_=abc", origin + "/api/s16/client/bootstrap?_=1&generation=3", origin + "/api/s16/client/requests/work/stop?_=1795344554092"]);
+  expect(new Headers(calls[0]!.init.headers).get("cache-control")).toBe("no-store");
+});
+
 test("the streaming native response survives when the platform global Response constructor is unusable", async () => {
   const store = secureStore(); await seed(store, origin); const original = globalThis.Response;
   const value = response(origin + "/api/s16/client/bootstrap", Response.json({ native: true }));
