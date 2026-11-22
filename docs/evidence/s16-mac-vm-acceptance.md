@@ -72,6 +72,22 @@ host, any x64 case at this build, and every case that needs model inference
 or an owner account. The x64 results of 2026-11-03 remain attributed to build
 `9082327dbb2534962cf2065a2a1537e723746046`.
 
+## Paired arm64 reference host (#340)
+
+The existing reference pair (a disposable Linux controller and a separate QEMU
+working machine under Lima on the same Mac) was run again at the head that
+contains this record's first revision: `JIT_S15_ARM64_EVIDENCE=1 bun run s15:evidence:arm64`
+at `9765bedfc0cf1d4a0d7c5c90e4922af10c4dffeb`, contract `s15-arm64-evidence/v1`,
+result file SHA-256 `e00a415d1f11d2fd64db997bc3ca0e2f9755206946d0e082d150b043fe06600c`.
+Exit 0, **9 of 9 passed**, baseline snapshots retained, working machine stopped
+afterwards: guest root, egress after a firewall flush, protected paths,
+snapshot recovery, an authenticated dynamic task (fixture password and TOTP in
+the protected owner port, one exact approved dispatch verified by body hash, no
+credential exported), the protected-browser guest boundary, a held browser
+communication click, browser bypass attempts and the payment policy. No model
+inference or owner credential was used; DNS and dialling for the fixture sites
+were controlled loopback.
+
 ## Packaged iOS client on the simulator (#426)
 
 Each build came from `bun ops/mobile/main.ts build` at a clean exact commit and
