@@ -10,7 +10,7 @@ import { s16RuntimeReaders } from './runtime-readers';
 
 function refuse(code: string): never { throw new AppError(code, 409); }
 const baseStores = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite'];
-const durable = new Set(['model.sqlite', 'work.sqlite', 'disclosure.sqlite', 'files.sqlite', 'routines.sqlite', 'notifications.sqlite', 'voice.sqlite']);
+const durable = new Set(['model.sqlite', 'work.sqlite', 'disclosure.sqlite', 'files.sqlite', 'routines.sqlite', 'notifications.sqlite', 'native-notifications.sqlite', 'voice.sqlite']);
 function sameEntry(a: BigIntStats, b: BigIntStats) { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && a.nlink === b.nlink; }
 function sameDirectory(a: BigIntStats, b: BigIntStats) { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode; }
 const auxiliary = (name: string) => name.endsWith('.runtime-lock.sqlite') && Object.hasOwn(s16RuntimeReaders, name.slice(0, -'.runtime-lock.sqlite'.length));
@@ -84,7 +84,7 @@ export function openS16RuntimeMaintenance(options: S16RuntimeMaintenanceOptions)
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || Object.keys(manifest).sort().join(',') !== 'contract,installationId,stores') refuse('s16_ops_inventory_changed');
     const declared = manifest as { contract: unknown; installationId: unknown; stores: unknown }, listed = declared.stores;
     if (declared.contract !== 's15-composition/v1' || declared.installationId !== options.installationId || !Array.isArray(listed) ||
-      listed.length > 17 || !baseStores.every(name => listed.includes(name)) ||
+      listed.length > Object.keys(s16RuntimeReaders).length || !baseStores.every(name => listed.includes(name)) ||
       listed.some(name => typeof name !== 'string' || !Object.hasOwn(s16RuntimeReaders, name)) || new Set(listed).size !== listed.length) refuse('s16_ops_inventory_changed');
     const selected = [...listed] as string[];
     const names = readdirSync(root), retained = names.filter(name => Object.hasOwn(s16RuntimeReaders, name) && !selected.includes(name));
@@ -122,6 +122,11 @@ export function openS16RuntimeMaintenance(options: S16RuntimeMaintenanceOptions)
       } else if (name !== 'vm.sqlite') {
         const rows = durable.has(name) ? db.query<{ installation: string }, []>('SELECT installation FROM identity LIMIT 2').all().map(row => row.installation) : db.query<{ id: string }, []>('SELECT id FROM identity LIMIT 2').all().map(row => row.id);
         if (rows.length !== 1 || rows[0] !== options.installationId) refuse('s16_ops_continuity_invalid');
+      }
+      if (name === 'native-notifications.sqlite') {
+        // Match the owning service's current schema probe without running its
+        // restart reconciliation, observing notices or dispatching a provider.
+        for (const query of ['SELECT id,owner_id,generation,provider,token,token_hash,locale,revision,created_at FROM native_devices_v1 LIMIT 0', 'SELECT id,source,owner_id,generation,kind,path,created_at FROM native_notices_v1 LIMIT 0', 'SELECT notice_id,device_id,state,attempts,next_at,code,updated_at FROM native_deliveries_v1 LIMIT 0', 'SELECT name,value FROM native_cursors_v1 LIMIT 0']) db.query(query).get();
       }
       metadataJson(db, name === 'vm.sqlite');
       const after = privateEntry(path); if (!sameEntry(before, after)) refuse('s16_ops_image_changed'); entries.set(path, after);

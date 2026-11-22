@@ -410,7 +410,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     return false;
   };
   const selectedS16 = (configured: S15RuntimeConfig | null) => lstatSync(join(paths.state, "operations"), { throwIfNoEntry: false }) !== undefined ||
-    configured?.files !== undefined || configured?.fileMemory !== undefined || configured?.routines !== undefined || configured?.voice !== undefined;
+    configured?.files !== undefined || configured?.fileMemory !== undefined || configured?.routines !== undefined || configured?.voice !== undefined || configured?.nativeNotifications !== undefined;
   const stopSelectedWorkingVms = async (configured: S15RuntimeConfig) => {
     const result = await call(["/usr/bin/getent", "passwd", p.vmmUser], 30_000);
     if (result.exitCode === 2 && !configured.vm.local && !result.timedOut) return;

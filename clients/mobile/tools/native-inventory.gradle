@@ -1,0 +1,60 @@
+import groovy.json.JsonOutput
+import groovy.xml.XmlSlurper
+import java.security.MessageDigest
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.maven.MavenModule
+import org.gradle.maven.MavenPomArtifact
+import java.util.zip.ZipFile
+
+// Read-only inventory of the actual release runtime resolution. No signing, deployment or account configuration.
+gradle.projectsEvaluated {
+  def app = gradle.rootProject.findProject(':app')
+  if (app == null) return
+  app.tasks.register('jitNativeInventory') {
+    doLast {
+      def destination = app.findProperty('jitNativeInventoryOutput')
+      if (!destination) throw new GradleException('mobile_inventory_output_required')
+      def configuration = app.configurations.getByName('releaseRuntimeClasspath')
+      def digest = { file -> MessageDigest.getInstance('SHA-256').digest(file.bytes).encodeHex().toString() }
+      def notices = { file ->
+        def found = []
+        new ZipFile(file).withCloseable { zip ->
+          zip.entries().findAll { !it.directory && it.name ==~ /(?i)(?:.*\/)?(?:license(?:\..*)?|notice(?:\..*)?|copying(?:\..*)?)/ }.each { entry ->
+            if (entry.size < 0 || entry.size > 1048576) throw new GradleException('mobile_notice_size_invalid')
+            def bytes = zip.getInputStream(entry).withCloseable { it.readNBytes(1048577) }
+            if (bytes.length > 1048576) throw new GradleException('mobile_notice_size_invalid')
+            found.add([path: entry.name, sha256: MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString(), text: new String(bytes, 'UTF-8')])
+          }
+        }
+        found.sort { a, b -> a.path <=> b.path }
+      }
+      def resolved = configuration.incoming.artifactView { componentFilter { it instanceof ModuleComponentIdentifier } }.artifacts.artifacts
+      def artifacts = resolved.collect {
+        [coordinate: it.id.componentIdentifier.displayName, file: it.file.name, sha256: digest(it.file), notices: notices(it.file)]
+      }.sort { a, b -> a.coordinate <=> b.coordinate ?: a.file <=> b.file }
+      def components = configuration.incoming.resolutionResult.allComponents.collect { it.id }.findAll { it instanceof ModuleComponentIdentifier }
+      def poms = app.dependencies.createArtifactResolutionQuery().forComponents(components).withArtifacts(MavenModule, MavenPomArtifact).execute()
+      def modules = poms.resolvedComponents.collect { component ->
+        def found = component.getArtifacts(MavenPomArtifact).findAll { it instanceof org.gradle.api.artifacts.result.ResolvedArtifactResult }
+        if (found.size() != 1) throw new GradleException('mobile_inventory_pom_unavailable: ' + component.id.displayName)
+        def file = found.first().file, xml = new XmlSlurper(false, false).parse(file)
+        def declared = { document -> document.licenses.license.collect { [name: it.name.text(), url: it.url.text()] } }
+        def licenses = declared(xml), parents = [], cursor = xml
+        while (licenses.isEmpty() && !cursor.parent.groupId.text().isEmpty()) {
+          if (parents.size() >= 8) throw new GradleException('mobile_pom_parent_limit')
+          def group = cursor.parent.groupId.text(), name = cursor.parent.artifactId.text(), version = cursor.parent.version.text()
+          def parentResult = app.dependencies.createArtifactResolutionQuery().forModule(group, name, version).withArtifacts(MavenModule, MavenPomArtifact).execute().resolvedComponents
+          def parentFiles = parentResult.collectMany { it.getArtifacts(MavenPomArtifact).findAll { it instanceof org.gradle.api.artifacts.result.ResolvedArtifactResult } }
+          if (parentFiles.size() != 1) throw new GradleException('mobile_pom_parent_unavailable')
+          def parentFile = parentFiles.first().file; cursor = new XmlSlurper(false, false).parse(parentFile); licenses = declared(cursor)
+          parents.add([coordinate: group + ':' + name + ':' + version, pomSha256: digest(parentFile)])
+        }
+        [coordinate: component.id.displayName, pomSha256: digest(file), parents: parents, project: xml.url.text(), licenses: licenses]
+      }.sort { a, b -> a.coordinate <=> b.coordinate }
+      def output = new File(destination.toString())
+      if (output.exists()) throw new GradleException('mobile_inventory_output_exists')
+      output.parentFile.mkdirs()
+      output.text = JsonOutput.prettyPrint(JsonOutput.toJson([contract: 's16-mobile-android-inputs/v1', artifacts: artifacts, modules: modules])).replaceAll(/(?m)[ \t]+$/, '') + '\n'
+    }
+  }
+}

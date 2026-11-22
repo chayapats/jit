@@ -1,0 +1,639 @@
+{
+  "contract": "s16-mobile-license-provenance/v1",
+  "clientLockSha256": "36d20a06e9cf998371e812432abbe94d7df4c970fe1b510f455ea365c6ca239e",
+  "podLockSha256": "c2ab21a43eb71b5ee5a07b4af2dc1e11e687dfa53479058cc1e7d4b157570cce",
+  "entries": [
+    {
+      "component": "glog",
+      "license": "BSD-3-Clause",
+      "repo": "google/glog",
+      "tag": "v0.3.5",
+      "commit": "a6a166db069520dbbd653c97c2e5b12e08a8bb26",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "COPYING",
+          "sha256": "0fc497129c5c69ff6f22da6933c7e4aaef082fde8437fd57680c2780100772a4",
+          "url": "https://raw.githubusercontent.com/google/glog/a6a166db069520dbbd653c97c2e5b12e08a8bb26/COPYING"
+        }
+      ]
+    },
+    {
+      "component": "DoubleConversion",
+      "license": "BSD-3-Clause",
+      "repo": "google/double-conversion",
+      "tag": "v1.1.6",
+      "commit": "361924fb61c043627d4179e941a102d543f6efa0",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "4af93c12062c58058378de2397dc1c92bbff9ddfb1d583a01c84127557ce97ca",
+          "url": "https://raw.githubusercontent.com/google/double-conversion/361924fb61c043627d4179e941a102d543f6efa0/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "RCT-Folly",
+      "license": "Apache-2.0",
+      "repo": "facebook/folly",
+      "tag": "v2024.11.18.00",
+      "commit": "0660ead5b610047a279cc291129e98e3f2a1fc37",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "2206c00af7013581ae0d7c8c8a0089f02fab621913daac019b32336bd4d1e1db",
+          "url": "https://raw.githubusercontent.com/facebook/folly/0660ead5b610047a279cc291129e98e3f2a1fc37/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "fast_float",
+      "license": "MIT",
+      "repo": "fastfloat/fast_float",
+      "tag": "v8.0.0",
+      "commit": "77cc847c842c49e7e3477c1e95da2b6540166d66",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6",
+          "url": "https://raw.githubusercontent.com/fastfloat/fast_float/77cc847c842c49e7e3477c1e95da2b6540166d66/LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "component": "fmt",
+      "license": "MIT",
+      "repo": "fmtlib/fmt",
+      "tag": "12.1.0",
+      "commit": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+          "url": "https://raw.githubusercontent.com/fmtlib/fmt/407c905e45ad75fc29bf0f9bb7c5c2fd3475976f/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "boost",
+      "license": "BSL-1.0",
+      "repo": "react-native-community/boost-for-react-native",
+      "tag": "v1.84.0",
+      "commit": "59ed9e589e222fb6d54b3e0a81d510190801b1d9",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE_1_0.txt",
+          "sha256": "beb8e42e9d6b4284e03304d05a81a0755200a965fc8d0a5e0aea1e84cf805d6e",
+          "url": "https://raw.githubusercontent.com/react-native-community/boost-for-react-native/59ed9e589e222fb6d54b3e0a81d510190801b1d9/LICENSE_1_0.txt"
+        }
+      ]
+    },
+    {
+      "component": "Fresco",
+      "license": "MIT",
+      "repo": "facebook/fresco",
+      "tag": "v3.7.0",
+      "commit": "e49df6696127cd0ca6b96036c5f46c8a8212a4cd",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+          "url": "https://raw.githubusercontent.com/facebook/fresco/e49df6696127cd0ca6b96036c5f46c8a8212a4cd/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Infer annotations",
+      "license": "MIT",
+      "repo": "facebook/infer",
+      "tag": "infer-annotation-0.18.0",
+      "commit": "92e60ed4d9e2d5d091194db287ad8f854aae9bf0",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85",
+          "url": "https://raw.githubusercontent.com/facebook/infer/92e60ed4d9e2d5d091194db287ad8f854aae9bf0/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Yoga",
+      "license": "MIT",
+      "repo": "facebook/yoga",
+      "tag": "v1.19.0",
+      "commit": "8a65d8b6dc65fbe71d3fdfc0d4274fc3d7b0452d",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85",
+          "url": "https://raw.githubusercontent.com/facebook/yoga/8a65d8b6dc65fbe71d3fdfc0d4274fc3d7b0452d/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Bolts Android",
+      "license": "BSD-3-Clause",
+      "repo": "BoltsFramework/Bolts-Android",
+      "tag": "1.4.0",
+      "commit": "3def0de57eb06ea09056251be93e397ea28e34c1",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "9e69750c616877af2dec86f961a53e39324c3655e25b1d6ceed06e9661ec072b",
+          "url": "https://raw.githubusercontent.com/BoltsFramework/Bolts-Android/3def0de57eb06ea09056251be93e397ea28e34c1/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Brotli license reference",
+      "license": "MIT",
+      "repo": "google/brotli",
+      "tag": "v1.1.0",
+      "commit": "ed738e842d2fbdf2d6459e39267a633c4a9b2f5d",
+      "licenseReferenceOnly": true,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+          "url": "https://raw.githubusercontent.com/google/brotli/ed738e842d2fbdf2d6459e39267a633c4a9b2f5d/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Protocol Buffers license reference",
+      "license": "BSD-3-Clause",
+      "repo": "protocolbuffers/protobuf",
+      "tag": "v3.25.5",
+      "commit": "9d0ec0f92b5b5fdeeda11f9dcecc1872ff378014",
+      "licenseReferenceOnly": true,
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+          "url": "https://raw.githubusercontent.com/protocolbuffers/protobuf/9d0ec0f92b5b5fdeeda11f9dcecc1872ff378014/LICENSE"
+        }
+      ]
+    },
+    {
+      "component": "Kolibri",
+      "license": "MIT",
+      "repo": "expo/kolibri",
+      "tag": "v0.2.4",
+      "commit": "afb099efe52588941346b02a88859d124c822730",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4",
+          "url": "https://raw.githubusercontent.com/expo/kolibri/afb099efe52588941346b02a88859d124c822730/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "component": "Pika",
+      "license": "MIT",
+      "repo": "expo/pika",
+      "tag": "v1.1.0",
+      "commit": "8456165a82a17c670614c91e12b784ab8245de57",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "921f777d6cb71423f5a0cd8f1a0847f087b97da62e4d48ffe63e3add13f50af5",
+          "url": "https://raw.githubusercontent.com/expo/pika/8456165a82a17c670614c91e12b784ab8245de57/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "component": "Expo Modules V2",
+      "license": "MIT",
+      "repo": "expo/expo-modules-v2-android",
+      "tag": "v0.2.7",
+      "commit": "c5c8a614ea5508dd62f60a69417b1f7fbb80b2e3",
+      "licenseReferenceOnly": false,
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "a1690bef5d8880c1036a72204838b18cf9dc19f51ed6a5147e281505601ac6cf",
+          "url": "https://raw.githubusercontent.com/expo/expo-modules-v2-android/c5c8a614ea5508dd62f60a69417b1f7fbb80b2e3/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "component": "Public Suffix List",
+      "license": "MPL-2.0",
+      "coordinate": "com.squareup.okhttp3:okhttp:4.9.2",
+      "jarSha256": "3b2ee1b768c1df28c30d2fe6b38dda4d2c519210e30ca3d27950618c563c92de",
+      "compressedSha256": "a1ef3d0e4ec2cbce14c1884ab0f3a4fef46e258de83530dc562ebb805bdb12fd",
+      "source": "public-suffix-list.txt",
+      "sourceSha256": "8472133139ef5736a6ae4d88c7a5597f0f31fe452d5fdde11c07e19d286025da"
+    },
+    {
+      "sourceMapSha256": "8a6d46cf358d65e722e3d26a81b265c3e7bdc7a7f2299c9fa44c84d016f644df",
+      "platform": "ios",
+      "purpose": "runtime component discovery, not device acceptance"
+    },
+    {
+      "sourceMapSha256": "d90e14d6e4c6819961e45ec84b7d2fb96d67e7d76efaf2b10a813e95994f0673",
+      "platform": "android",
+      "purpose": "runtime component discovery, not device acceptance"
+    },
+    {
+      "component": "@expo/cli@58.1.21",
+      "registryIntegrity": "sha512-E+27FQ1Y26fVb0p1wVHBFkbe5oQubUXLwF/au5Vy8OCqDWrmbekBQamRI4mBhY15FhZQxAkyK0e6hXcEFKVBOw==",
+      "files": [
+        {
+          "path": "LICENSE-third-party",
+          "sha256": "377f1a9763b9dd9dad730c1534fe2f215496eda131553a16f3f9251f559e3a59"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "@expo/dom-webview@58.0.2",
+      "registryIntegrity": "sha512-bLkREoP7qL3rEuzxP60xG+TjdPoGjbnZfxkvYo5imJxGWfKMOf7x962W06Pu+WWAr4gcDRk16iA+Clg8D0zjCg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "@expo/log-box@58.0.15",
+      "registryIntegrity": "sha512-IBpaJcTdJlSqmiEtyI9XDiNPSRUZNpeWdRbzE4ic6I4k17mpy0LxWJ4Mz2hB7B48b9BrleUKFeZ+6VseglmvGQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "@react-native/asset-utils@0.88.1",
+      "registryIntegrity": "sha512-BLb5FF7NgggGYiCsA7KKkK2qFhn0K+6iGXOI+4Ucd+G7Robzw9Gt4WsWwxLt+Od+G+/hyqfz8ASokyWFZ6VcLw==",
+      "files": [],
+      "licenseFrom": "react-native@0.88.1/LICENSE"
+    },
+    {
+      "component": "@react-native/js-polyfills@0.88.1",
+      "registryIntegrity": "sha512-B62O6zVMYW7kK8dxIuCwpdJ5RYcIvET6ItScm0sfsTibJs+llS0krUVSAOHnEUn3lbFMfw+o+sNdWREOAc6FfQ==",
+      "files": [],
+      "licenseFrom": "react-native@0.88.1/LICENSE"
+    },
+    {
+      "component": "@react-native/normalize-colors@0.88.1",
+      "registryIntegrity": "sha512-2SAKiLyZRf+peBLkhhJWGY5vC26w1Uj9QBgUZvjAnOxjgeEKUGBE5riPS0R7+YoqSrRL0w8ucwZB4M+vvy9HMg==",
+      "files": [],
+      "licenseFrom": "react-native@0.88.1/LICENSE"
+    },
+    {
+      "component": "@react-native/virtualized-lists@0.88.1",
+      "registryIntegrity": "sha512-Zt+OGvJE6VgmzgemZL8TSA0VomNWpHMNcG0OvLkkBQEGrzY8OdDHRfjJh7S+f+UFJF77kicRC6o6mt3A7ER9lQ==",
+      "files": [],
+      "licenseFrom": "react-native@0.88.1/LICENSE"
+    },
+    {
+      "component": "@ungap/structured-clone@1.4.0",
+      "registryIntegrity": "sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "dc6d4961d8b6ee747231582ae9c53ce1d66bf76bc9f5a28f554c0e97210953bf"
+        }
+      ]
+    },
+    {
+      "component": "abort-controller@3.0.0",
+      "registryIntegrity": "sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "dbbf03317f0101fed5643cd87ca80fb769e358fa4f428445bf2315deeb23a154"
+        }
+      ]
+    },
+    {
+      "component": "base64-js@1.5.1",
+      "registryIntegrity": "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "5b37224c080cdcc97c871ada971c224e9926370fe74f11b539aa1cf9f3b1aca1"
+        }
+      ]
+    },
+    {
+      "component": "escape-string-regexp@4.0.0",
+      "registryIntegrity": "sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==",
+      "files": [
+        {
+          "path": "license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "component": "event-target-shim@5.0.1",
+      "registryIntegrity": "sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "97d87142793695cd73243de7258694abe85b3b6060fca7f247b0a2afa8219678"
+        }
+      ]
+    },
+    {
+      "component": "expo-application@58.1.2",
+      "registryIntegrity": "sha512-WYFdNHGaxe/j69oYREhK0cKsKYszuIuz399WXYCP+M1grfO+FCWB/RbuMgaXJsLWlzqhNjA/zLgfJ+33FwrQvw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-asset@58.0.21",
+      "registryIntegrity": "sha512-qaJmuTtswggXdBQfiUdpxrVGM7l+tH8iEDHwVDMuxyCF/kAau8sUGVuWrDKYNW4yAx7Z8ncgsT8s27pXjRH5GA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-constants@58.0.16",
+      "registryIntegrity": "sha512-sVETnE1ktBMclc2Ve3qNrHhOCCio75a9JdghnJYGbqblmKfrrfE+lO9K4g9kNtmslIBLTK9Dyty6PbubkXs3Yw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-crypto@58.0.8",
+      "registryIntegrity": "sha512-yMSiMlallOweQ28oQ3BqJf6I/4ZoBggFNRg+PfjG1NbQWBWzGKmkPPUrd3yT0oPW4P+AYppg+Mw6xoAYddLUKA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-document-picker@58.0.5",
+      "registryIntegrity": "sha512-DHv8GhjDwu2BbDWhV2j52iaqwWsA9P7n5nAwreiKRGQSxv0wpF/C0Cqpqj1B72io8E2KXddwxxKPWVPlV/kgtA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-file-system@58.0.14",
+      "registryIntegrity": "sha512-VK67RQPDmWRHGbvpmPY5MeA1Ulw1LiyKs4KIN8na/q7SlkxYuPPR8biWsyX1S1/8XAHm6y2txUnYjCKh9l93lQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-font@58.0.12",
+      "registryIntegrity": "sha512-5m8TJrQ27DT1815P066HBtcHINgD8yuIqH4ca2ZyYwCsPa4QZ8UzOBDtrHnAMWMAlAgol+PGVj9aKeoYov70JA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-keep-awake@58.0.4",
+      "registryIntegrity": "sha512-zXJJRBwMpWl2Q2Aj9rksMe1ncz6aphOPqYnG3rTkCFALZiM22xQCqpQqBloDcQ6g4RdGTy++lRnsDX7MWpK1qw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-modules-core@58.1.0",
+      "registryIntegrity": "sha512-eXHOPyxHkDyTxUWnKEatC+Hx4tLoPWCPd5pCynAU4WkaBvAG/l5t/wu5jXiE5eh2CRr2NU4iAQePX2zUfNEVhA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-modules-jsi@58.0.23",
+      "registryIntegrity": "sha512-ex3CnT8KLubsPjUG0RpEL5VgmpnWxf7Ouc+WXEr8jEbIwqcULEWtA2tfhGZwjg6jS3zeNwjygF1w8QSstP7JfQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-notifications@58.1.9",
+      "registryIntegrity": "sha512-Zhixn1+3hdd+XqwAwnNqggePs+/fcwERoBxrxTaJjfEMA0N9Q4RPm2iIsBuzKxrccRBJz0BMF2QULQXoA5yGtw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-secure-store@58.0.3",
+      "registryIntegrity": "sha512-RpubZfqJREEcwKbx3HFoWbtDd31t+yESMj7Ei5/mGQp5vViwUBzL4nUCZRLFyt+O690mT8We7dDtIUZeIk6LbQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo-system-ui@58.0.7",
+      "registryIntegrity": "sha512-XxrMY93bT8MpZUlc6uRKzkeUoXhBi/Eq8j3qx2pjk0ARCV+0Ed1eqzmgxuAoKZ+10cyOZVSke5Hhi78NVFReuQ==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "expo@58.0.26",
+      "registryIntegrity": "sha512-6i4kqt5lbcQdxmtnkkJ3JR5sn+A3L+xO45duLhh2rndvrek/chX/GTysTYozl4oL3+txKD53pDlJd75XRYf9Ow==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "fb3ca4a837f5779e83cef89b78253a8949cfb9429c340309f62d0465ec6610b4"
+        }
+      ]
+    },
+    {
+      "component": "flow-enums-runtime@0.0.6",
+      "registryIntegrity": "sha512-3PYnM29RFXwvAN6Pc/scUfkI7RwhQ/xqyLUyPNlXUp9S40zI8nup9tUSrTLSVnWGBN38FNiGWbwZOB6uR4OGdw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+        }
+      ]
+    },
+    {
+      "component": "invariant@2.2.4",
+      "registryIntegrity": "sha512-phJfQVBuaJM5raOpJjSfkiD6BpbCE4Ns//LaXl6wGYtUBY83nWS6Rf9tXm2e8VaK60JEjYldbPif/A2B1C2gNA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "f657f99d3fb9647db92628e96007aabb46e5f04f33e49999075aab8e250ca7ce"
+        }
+      ]
+    },
+    {
+      "component": "memoize-one@5.2.1",
+      "registryIntegrity": "sha512-zYiwtZUcYyXKo/np96AGZAckk+FWWsUdJ3cHGGmld7+AhvcWmQyGCYUh1hc4Q/pkOhb65dQR/pqCyK0cOaHz4Q==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "b1c501095de70182748cb8e8d97ac5577701a4ef3b755ba30d59fd87b24bdb0f"
+        }
+      ]
+    },
+    {
+      "component": "nullthrows@1.1.1",
+      "registryIntegrity": "sha512-2vPPEi+Z7WqML2jZYddDIfy5Dqb0r2fze2zTxNNknZaFpVHU3mFB3R+DWeJWGVx0ecvttSGlJTI+WG+8Z4cDWw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "dd5f97aa25431e25fea6654f12f4ce167dc19b3148ab515cc271aa8efe6eb0be"
+        }
+      ]
+    },
+    {
+      "component": "promise@8.3.0",
+      "registryIntegrity": "sha512-rZPNPKTOYVNEEKFaq1HqTgOwZD+4/YHS5ukLzQCypkj+OkYx7iv0mA91lJlpPPZ8vMau3IIGj5Qlwrx+8iiSmg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "5e733eb92ed0c571da3f27c5da203e0a9f975b4f96e7692c9fa3660ca54820ec"
+        }
+      ]
+    },
+    {
+      "component": "react-native-safe-area-context@5.11.1",
+      "registryIntegrity": "sha512-yCltXXwhwp42vMqfhAsH5BWgAysbLNgwfn3PDwNpOn/CgwfM+eMWgScZIbHbMzJYNLi5bKJEOIUEG4RwKNiECA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "f5c7a4d527258e11fdfe3d84eb73cd14fe6d64224ef051e59f6ee21fe378800c"
+        }
+      ]
+    },
+    {
+      "component": "react-native-webview@14.0.1",
+      "registryIntegrity": "sha512-lBUuvFk459Mo+5vUNqwzGvn+I8rDJE6zvOulG2hWWudeEOJfWTsQwOfuYnRu+27djUIXrESFfC+EQE3PGu+FWA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "22a28f29cff8f5ecf9f463301d9c03b8245a2952ebae0bcab633fd654c0792fb"
+        }
+      ]
+    },
+    {
+      "component": "react-native@0.88.1",
+      "registryIntegrity": "sha512-wajWcLZ93GCN7k4Uwh4CS4L2Ah8ohcvkOXnvIYmh4Yvuqho5j3APZ9qozK+nQrHWSgauq4h8D3HN5DKK84SrHA==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ]
+    },
+    {
+      "component": "react@19.3.0",
+      "registryIntegrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ]
+    },
+    {
+      "component": "regenerator-runtime@0.13.11",
+      "registryIntegrity": "sha512-kY1AZVr2Ra+t+piVaJ4gxaFaReZVH40AKNo7UCX6W+dEwBo/2oZJzqfuN1qLq1oL45o56cPaTXELwrTh8Fpggg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "51887a3d47051ac2fce1210562e5b9fe0830a8a8fabeb272c2d586eeb18a05fd"
+        }
+      ]
+    },
+    {
+      "component": "scheduler@0.28.0",
+      "registryIntegrity": "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ]
+    },
+    {
+      "component": "stacktrace-parser@0.1.11",
+      "registryIntegrity": "sha512-WjlahMgHmCJpqzU8bIBy4qtsZdU9lRlcZE3Lvyej6t4tuOuv1vk57OW3MBrj6hXBFx/nNoC9MPMTcr5YA7NQbg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "e1898814043cb5500483d9c8517edda824b352f696d35e5043fcfb537c221531"
+        }
+      ]
+    },
+    {
+      "component": "whatwg-fetch@3.6.20",
+      "registryIntegrity": "sha512-EqhiFU6daOA8kpjOWTL0olhVOF3i7OrFzSYiGsEMB8GcXS+RrzauAERX65xMeNWVqxA6HXH2m69Z9LaKKdisfg==",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c887d1c97797646dbb216925ab44a93c6b3e7f03bbe6ef6e0f92b8b8ade63014"
+        }
+      ]
+    },
+    {
+      "component": "whatwg-url-minimum@0.2.0",
+      "registryIntegrity": "sha512-BtjXU1caNcCFfETP2DhqSeVPfRDl2MTUitI107RE34rJXjR/izfUtR5IoTFOK1WqjNLXbbeqaCH/mQAOLjpc8g==",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "c2ecf83f830f226f662c99d003162002c78edd8b59f1105621bdcc2c44043a7d"
+        }
+      ]
+    }
+  ]
+}

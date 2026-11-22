@@ -1,0 +1,7 @@
+/node_modules/
+/.expo/
+/.local/
+/dist/
+/ios/
+/android/
+**/build/
