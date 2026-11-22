@@ -125,7 +125,9 @@ export class MobileTransport {
   }
   async #authenticatedFetch(request: Request, nativeBytes?: Uint8Array<ArrayBuffer>): Promise<Response> {
     const generation = this.#generation; this.#current(generation);
-    const url = new URL(request.url);
+    // React Native's fetch polyfill appends `_=<time>` to every no-store GET URL. The service refuses unknown
+    // queries, so exactly that trailing parameter is removed; the no-store headers below still apply.
+    const url = new URL(request.method === "GET" ? request.url.replace(/[?&]_=\d{1,16}$/, "") : request.url);
     if (url.origin !== this.origin || url.username || url.password || url.hash || !(url.pathname === "/api/s16/client" || url.pathname.startsWith("/api/s16/client/")) || !["GET", "POST"].includes(request.method)) return fail("mobile_origin_invalid");
     if (!this.authenticated) { this.#credential = null; return fail("mobile_session_missing"); }
     const headers = new Headers(request.headers); headers.delete("authorization"); headers.set("Cookie", this.#cookieName() + "=" + this.#credential!.token); headers.set("Origin", this.origin); headers.set("Cache-Control", "no-store"); headers.set("Pragma", "no-cache");
