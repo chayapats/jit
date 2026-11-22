@@ -110,7 +110,7 @@ async function publicWeb(service: string, output: string, commit: string, servic
     require(a && b && a.byteLength > 0 && a.byteLength <= limit && Buffer.from(a).equals(Buffer.from(b))); return new Uint8Array(a!);
   };
   const releaseBytes = await read('/s16/desktop-release.json', 65536), release = JSON.parse(new TextDecoder().decode(releaseBytes));
-  require(release.contract === 's16-desktop-release/v1' && Array.isArray(release.assets) && release.assets.length === 8);
+  require(release.contract === 's16-desktop-release/v1' && Array.isArray(release.assets) && release.assets.length === current.s16PublicAssetCount);
   const { id, ...unsigned } = release; require(hash(JSON.stringify(unsigned)) === id);
   mkdirSync(output, { mode: 0o700 }); let bytes = 0; const seen = new Set<string>();
   for (const asset of release.assets) {

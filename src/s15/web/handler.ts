@@ -33,7 +33,8 @@ export function s15ConversationPort<Actor, Work>(app: ConversationApplication<Ac
 }
 
 /** Explicit opt-in mount options. S14 never mounts this handler; only S15 composition does. */
-export interface S15WebOptions { origin: string; cookieName: string; loginPath: string; now?: () => number }
+/** `home` is where `/` sends an owner whose standing rules are current; it defaults to a new S15 conversation. */
+export interface S15WebOptions { origin: string; cookieName: string; loginPath: string; now?: () => number; home?: `/${string}` }
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const codeOf = (error: unknown) => error instanceof AppError || error instanceof PolicyError || error instanceof BrowserError ? error.code : "conversation_unavailable";
 const statusOf = (error: unknown) => error instanceof AppError ? error.status : error instanceof PolicyError ? 409 : 503;
@@ -301,7 +302,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
 
       if (request.method === "GET") {
         settleResumes();
-        if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? "/chats/new" : "/setup");
+        if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? options.home ?? "/chats/new" : "/setup");
         if (url.pathname === "/chats/new") {
           const conversationId = crypto.randomUUID().replaceAll("-", ""), path = `/chats/${conversationId}`;
           // Presentation negotiation only: a new empty conversation creates no journal, task or authority.

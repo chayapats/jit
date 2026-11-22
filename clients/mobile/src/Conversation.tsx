@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, TextInput, View } from "react-native";
+import type React from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
 import WebView from "react-native-webview";
 import { cardFacts } from "../../../src/s16/client/action-card";
 import { JitClientError, type ClientSnapshot } from "../../../src/s16/client";
@@ -74,8 +75,9 @@ function NativePreview({ ui, session, artifact, html, onFailure }: { ui: Ui; ses
   </View>;
 }
 
-/** Current protected conversation, real file receipts and immutable command recovery. */
-export function Conversation({ ui, session, snapshot, commands, drafts, files, voice, onFailure }: { ui: Ui; session: MobileSession; snapshot: ClientSnapshot; commands: MobileCommands; drafts: MobileDrafts; files: NativeFiles; voice: MobileVoice; onFailure(error: unknown): void }) {
+/** Current protected conversation, real file receipts and immutable command recovery. The transcript scrolls above a docked composer. */
+export function Conversation({ ui, session, snapshot, commands, drafts, files, voice, header, onFailure }: { ui: Ui; session: MobileSession; snapshot: ClientSnapshot; commands: MobileCommands; drafts: MobileDrafts; files: NativeFiles; voice: MobileVoice; header?: ReactNode; onFailure(error: unknown): void }) {
+  const transcript = useRef<React.ComponentRef<typeof ScrollView>>(null);
   const intent = mobileIntent(session), conversation = intent.conversationId;
   const uploadCapability = session.projection.bootstrap?.capabilities.uploads, creationLookup = uploadCapability?.available && uploadCapability.creationLookup === "s16-upload-creation/v1";
   const subscribe = useCallback((listener: () => void) => drafts.subscribe(listener), [drafts]);
@@ -97,14 +99,19 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
     try { await recoverMobileCommand(commands, drafts, intent, entry); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }
     catch (error) { if (error instanceof JitClientError && error.status === 404) setAbsent(entry.requestId); else throw error; }
   }
-  return <>
-    {snapshot.conversation.rows.length === 0 && <UiText ui={ui}>{ui.t("s16.chat.empty")}</UiText>}
-    {snapshot.conversation.rows.map(row => <View key={row.requestId} style={ui.styles.card}>
-      <UiText ui={ui} selectable style={ui.styles.message}>{row.ownerMessage}</UiText>
-      <UiText ui={ui} style={ui.styles.muted}>{ui.t(statusKey(row.state))}</UiText>
+  return <View style={ui.styles.fill}>
+    <ScrollView ref={transcript} style={ui.styles.fill} keyboardShouldPersistTaps="handled" contentContainerStyle={ui.styles.content} onContentSizeChange={() => transcript.current?.scrollToEnd({ animated: false })}>
+    {header}
+    {snapshot.conversation.rows.length === 0 && <UiText ui={ui} accessibilityRole="header" style={ui.styles.title}>{ui.t("s16.chat.empty")}</UiText>}
+    {snapshot.conversation.rows.map(row => <View key={row.requestId} style={ui.styles.turn}>
+      {(!!row.ownerMessage || !!row.files?.inputs.length) && <View style={ui.styles.bubble}>
+        {!!row.ownerMessage && <UiText ui={ui} selectable>{row.ownerMessage}</UiText>}
+        {row.files?.inputs.map(file => <UiText ui={ui} key={file.id} style={ui.styles.muted}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>)}
+      </View>}
+      <View style={ui.styles.reply}>
+      <View style={ui.styles.status}><View style={[ui.styles.dot, { backgroundColor: row.state === "done" ? ui.colors.ok : row.progress.active ? ui.colors.text : ui.colors.warn }]} /><UiText ui={ui} style={ui.styles.muted}>{ui.t(statusKey(row.state))}</UiText></View>
       {row.result && <UiText ui={ui} selectable>{row.result.text}</UiText>}
       {row.needsYou && <UiText ui={ui}>{ui.t("s16.chat.hold")} · {row.needsYou.code}</UiText>}
-      {row.files?.inputs.map(file => <UiText ui={ui} key={file.id}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>)}
       {capability.exactDecisions && row.slips.filter(slip => slip.state === "pending").map(slip => <ExactCard key={`${slip.action.id}:${slip.action.revision}:${slip.action.actionHash}`} ui={ui} session={session} commands={commands} slip={slip} onFailure={onFailure} />)}
       {row.progress.active && <Button ui={ui} secondary label={ui.t("s16.chat.stop")} disabled={busy} onPress={() => { void run(async () => { await session.perform((client, signal) => client.stop(row.requestId, signal)); await session.poll(); }); }} />}
       {row.files?.artifacts.map(artifact => <View key={artifact.id} style={ui.styles.card}>
@@ -113,14 +120,16 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
         {preview === artifact.id && <NativePreview ui={ui} session={session} artifact={artifact} html={capability.artifacts.available && capability.artifacts.html === "sandboxed_static"} onFailure={onFailure} />}
         <Button ui={ui} secondary label={ui.t("s16.artifact.download", { name: artifact.name })} disabled={busy} onPress={() => { void run(() => files.export(artifact)); }} />
       </View>)}
+      </View>
     </View>)}
-    <View style={ui.styles.card}>
+    </ScrollView>
+    <ScrollView style={ui.styles.dock} keyboardShouldPersistTaps="handled" alwaysBounceVertical={false}><View style={ui.styles.composerCard}>
       {pending === null ? <ActivityIndicator color={ui.colors.accent} accessibilityLabel={ui.t("s16.common.loading")} /> : pending.length > 0 ? <>
         <UiText ui={ui}>{ui.t("s16.chat.unknown")}</UiText>
         {pending.map(entry => <View key={entry.requestId} style={ui.styles.card}>
           <Button ui={ui} label={ui.t("s16.chat.recover")} disabled={busy} onPress={() => { void run(() => recover(entry)); }} />
           {absent === entry.requestId && <><UiText ui={ui}>{ui.t("s16.mobile.originalAbsent")}</UiText>
-            {commands.canRetry(entry) ? <Button ui={ui} label={ui.t("s16.chat.resend")} disabled={busy} onPress={() => { void run(async () => { await commands.retry(entry.requestId); checkMobileIntent(intent); drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }); }} />
+            {commands.canRetry(entry) ? <Button ui={ui} label={ui.t("s16.chat.resend")} disabled={busy} onPress={() => { void run(async () => { await commands.retry(entry.requestId); checkMobileIntent(intent); if (entry.kind === "message") drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }); }} />
             : <Button ui={ui} secondary label={ui.t("s16.mobile.composeNew")} disabled={busy} onPress={() => { void run(async () => { await commands.forgetAbsent(entry); checkMobileIntent(intent); drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); }); }} />}
           </>}
         </View>)}
@@ -136,12 +145,12 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
       <TextInput accessibilityLabel={ui.t("s16.chat.prompt")} placeholder={ui.t("s16.chat.prompt")} placeholderTextColor={ui.colors.muted}
         value={draft.text} onChangeText={text => drafts.change(intent, current => ({ ...current, text }))} multiline editable={!busy && !voiceState.busy && pending !== null && !pending.length}
         style={[ui.styles.input, ui.styles.composer]} />
-      <Button ui={ui} label={ui.t(busy ? "s16.chat.sending" : "s16.chat.send")} disabled={busy || voiceState.busy || pending === null || !!pending.length || !draft.text.trim() && !draft.files.length || draft.files.some(file => file.phase !== "ready")} onPress={() => { void send(); }} />
+      <View style={ui.styles.composerRow}>
+        {capability.uploads.available ? <Button ui={ui} compact secondary label={ui.t("s16.files.attach")} disabled={busy || voiceState.busy || pending === null || !!pending.length || draft.files.length >= capability.uploads.limits.messageFiles} onPress={() => { void run(() => files.pick()); }} /> : <View />}
+        <Button ui={ui} compact label={ui.t(busy ? "s16.chat.sending" : "s16.chat.send")} disabled={busy || voiceState.busy || pending === null || !!pending.length || !draft.text.trim() && !draft.files.length || draft.files.some(file => file.phase !== "ready")} onPress={() => { void send(); }} />
+      </View>
       {capability.voice?.available ? <VoiceControls ui={ui} control={voice} disabled={busy || pending === null || !!pending.length} onFailure={onFailure} /> : <UiText ui={ui} style={ui.styles.muted}>{ui.t("s16.voice.unavailable")}</UiText>}
-      {capability.uploads.available ? <>
-        <Button ui={ui} secondary label={ui.t("s16.files.attach")} disabled={busy || voiceState.busy || pending === null || !!pending.length || draft.files.length >= capability.uploads.limits.messageFiles} onPress={() => { void run(() => files.pick()); }} />
-        <UiText ui={ui} style={ui.styles.muted}>{ui.t("s16.files.limits", { count: capability.uploads.limits.messageFiles, bytes: (capability.uploads.textBytes ?? capability.uploads.limits.fileBytes).toLocaleString(ui.locale) })}</UiText>
-      </> : <UiText ui={ui} style={ui.styles.muted}>{ui.t("s16.files.unavailable")}</UiText>}
-    </View>
-  </>;
+      <UiText ui={ui} style={ui.styles.muted}>{capability.uploads.available ? ui.t("s16.files.limits", { count: capability.uploads.limits.messageFiles, bytes: (capability.uploads.textBytes ?? capability.uploads.limits.fileBytes).toLocaleString(ui.locale) }) : ui.t("s16.files.unavailable")}</UiText>
+    </View></ScrollView>
+  </View>;
 }

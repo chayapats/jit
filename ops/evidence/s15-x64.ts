@@ -16,7 +16,9 @@ import { VmSshTransport } from '../../src/s15/vm/transport';
 import { vmHostCommand } from '../../src/s15/vm/host';
 
 /**
- * Opt-in x64 live evidence for the Jit-managed nested KVM working VM (VM15-02). Run on the controller host
+ * Opt-in single-host live evidence for the Jit-managed nested KVM working VM (VM15-02), on x64 or, since the
+ * x64 reference host was retired, on an arm64 Linux host with KVM. The report names the actual architecture
+ * and an arm64 run never claims the x64 contract. Run on the controller host
  * as a disposable non-root evidence identity in the `kvm` group with a lingering user manager. It creates a
  * fresh protected state directory and working VM, runs the selected cases, records exact build/config/image
  * hashes under the ignored `.local/s15-evidence-x64/`, and stops the working VM afterwards. No model
@@ -40,20 +42,21 @@ function sourceTreeHash(root: string): string {
 }
 
 export async function runS15X64Evidence(argv = process.argv.slice(2)): Promise<void> {
-  if (process.env.JIT_S15_X64_EVIDENCE !== '1' || process.platform !== 'linux' || process.arch !== 'x64') throw Error('explicit_x64_evidence_opt_in_required');
+  if (process.env.JIT_S15_X64_EVIDENCE !== '1' || process.platform !== 'linux' || process.arch !== 'x64' && process.arch !== 'arm64') throw Error('explicit_x64_evidence_opt_in_required');
+  const architecture = process.arch === 'arm64' ? 'aarch64' as const : 'x86_64' as const, x64 = architecture === 'x86_64';
   if (process.getuid?.() === 0) throw Error('evidence_must_not_run_as_root');
   const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
   const sha = flag('--sha'); if (!sha || !/^[a-f0-9]{40}$/.test(sha)) throw Error('exact_build_sha_required');
   const selected = (flag('--cases') ?? required.join(',')).split(',') as Case[];
   if (selected.some(c => ![...required, ...optional].includes(c as never))) throw Error('unknown_case');
   const soakMinutes = Number(flag('--soak-minutes') ?? '60'); if (!Number.isSafeInteger(soakMinutes) || soakMinutes < 1 || soakMinutes > 1440) throw Error('invalid_soak_minutes');
-  const output = resolve(process.env.JIT_S15_EVIDENCE_DIRECTORY ?? `.local/s15-evidence-x64/run-${sha.slice(0, 12)}-${Date.now()}`); mkdirSync(output, { recursive: true, mode: 0o700 });
+  const output = resolve(process.env.JIT_S15_EVIDENCE_DIRECTORY ?? `.local/${x64 ? 's15-evidence-x64' : 's15-evidence-arm64-host'}/run-${sha.slice(0, 12)}-${Date.now()}`); mkdirSync(output, { recursive: true, mode: 0o700 });
   const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 }), proof = {}, now = Date.now(), until = now + 6 * 3600000;
   const selection = { route: ref('route'), model: ref('model'), effort: 'low' }, modelBound = { ...zero(), calls: 1, steps: 1, activeMs: 10000 };
   const route: ApprovedModelRoute = { selection, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: modelBound, rank: { ordinary: 0, difficult: 0 } };
-  const qemuVersion = (Buffer.from((await vmHostCommand(['/usr/bin/qemu-system-x86_64', '--version'], { timeoutMs: 10000, maxBytes: 4096 })).stdout).toString().split('\n')[0] ?? '').trim();
-  const report: Record<string, unknown> = { contract: 's15-x64-evidence/v1', sha, sourceTreeHash: sourceTreeHash(process.cwd()), bun: Bun.version, architecture: process.arch, kernel: release(), qemu: qemuVersion,
-    host: { cpus: cpus().length, memoryBytes: totalmem() }, image: localVmImages.x86_64, cases: {}, selected, modelInference: 'not_run', ownerCredentials: 'not_used', recipients: 'none', money: 'none', startedAt: new Date().toISOString() };
+  const qemuVersion = (Buffer.from((await vmHostCommand([`/usr/bin/qemu-system-${architecture}`, '--version'], { timeoutMs: 10000, maxBytes: 4096 })).stdout).toString().split('\n')[0] ?? '').trim();
+  const report: Record<string, unknown> = { contract: x64 ? 's15-x64-evidence/v1' : 's15-single-host-evidence/v1', sha, sourceTreeHash: sourceTreeHash(process.cwd()), bun: Bun.version, architecture: process.arch, kernel: release(), qemu: qemuVersion,
+    host: { cpus: cpus().length, memoryBytes: totalmem() }, image: localVmImages[architecture], cases: {}, selected, modelInference: 'not_run', ownerCredentials: 'not_used', recipients: 'none', money: 'none', startedAt: new Date().toISOString() };
   const cases = report.cases as Record<string, unknown>, proxyLog: VmProxyLog[] = [];
   const catalog = new Map<string, { ref: Ref; active: boolean }>();
   for (const [kind, names] of Object.entries({ purpose: ['evidence', 'interpret'], bot: ['bot'], resource: ['computer'], recipient: ['provider'], route: ['route'], model: ['model'] })) for (const id of names) catalog.set(`${kind}:${id}`, { ref: ref(id), active: true });
@@ -92,10 +95,10 @@ export async function runS15X64Evidence(argv = process.argv.slice(2)): Promise<v
     managerId = service.vmManagers.register(owner, { kind: 'qemu' }).managerId;
     const status = await service.enrollment.enrollLocal(owner, { id: 'x64', managerId });
     const machine = await local().inspect(), argv = await (async () => { const pid = Number(machine.boot.split(':')[0]); return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0$/, '').split('\0'); })();
-    const base = join(protectedDirectory, 'vm-local', 'images', `${localVmImages.x86_64.sha256}.qcow2`);
+    const base = join(protectedDirectory, 'vm-local', 'images', `${localVmImages[architecture].sha256}.qcow2`);
     cases.provision = { passed: status.state === 'ready' && status.networkIsolated, seconds: Math.round((Date.now() - started) / 1000), status, resources: local().resources,
-      image: { sha256Recomputed: await localVmFileHash(base), pinned: localVmImages.x86_64.sha256, baseMode: (lstatSync(base).mode & 0o777).toString(8) },
-      hypervisor: { network: machine.network, argvExact: qemuArgvFacts(argv, { name: local().identity.name, architecture: 'x86_64', machineDirectory: local().machineDirectory, proxySocket: join(protectedDirectory, 'vm-local', 'proxy.sock') }).exact, argvHash: createHash('sha256').update(argv.join('\0')).digest('hex'), qemuUser: process.getuid?.() } };
+      image: { sha256Recomputed: await localVmFileHash(base), pinned: localVmImages[architecture].sha256, baseMode: (lstatSync(base).mode & 0o777).toString(8) },
+      hypervisor: { network: machine.network, argvExact: qemuArgvFacts(argv, { name: local().identity.name, architecture, machineDirectory: local().machineDirectory, proxySocket: join(protectedDirectory, 'vm-local', 'proxy.sock') }).exact, argvHash: createHash('sha256').update(argv.join('\0')).digest('hex'), qemuUser: process.getuid?.() } };
     writeFileSync(join(output, 'qemu-argv.json'), JSON.stringify(argv, null, 2), { mode: 0o600 });
     check((cases.provision as { passed: boolean }).passed, 'provision_failed');
     if (selected.includes('root')) {
@@ -190,7 +193,7 @@ export async function runS15X64Evidence(argv = process.argv.slice(2)): Promise<v
     report.proxyDestinations = [...new Set(proxyLog.map(e => `${e.host}:${e.state}`))];
     report.finishedAt = new Date().toISOString();
     writeFileSync(join(output, 'results.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
-    writeFileSync(join(output, 'manifest.json'), JSON.stringify({ sha, sourceTreeHash: report.sourceTreeHash, image: localVmImages.x86_64, qemu: qemuVersion, bun: Bun.version, kernel: release(), selected, output }, null, 2), { mode: 0o600 });
+    writeFileSync(join(output, 'manifest.json'), JSON.stringify({ sha, sourceTreeHash: report.sourceTreeHash, image: localVmImages[architecture], qemu: qemuVersion, bun: Bun.version, kernel: release(), selected, output }, null, 2), { mode: 0o600 });
   }
   console.log(JSON.stringify({ status: report.status, stage: report.stage, cases: Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, (v as { passed: boolean }).passed])), output, finalVmState: report.finalVmState }));
 }
