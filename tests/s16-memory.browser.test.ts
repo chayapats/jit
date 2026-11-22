@@ -134,8 +134,8 @@ browserTest.each([1440, 390])("memory deep links leave chat drafts usable, Chats
     await dialog.getByRole("button", { name: copy["s16.common.close"], exact: true }).click();
 
     // The claim hash from the memory link never becomes a chat recovery request.
-    if (width === 390) await page.locator(".mobile-nav").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
-    else await page.locator(".rail").getByRole("button", { name: `● ${copy["s16.chat.title"]}`, exact: true }).click();
+    if (width === 390) await page.locator(".chat-header").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
+    else await page.locator(".rail").getByRole("button", { name: copy["s16.chat.title"], exact: true }).click();
     const composer = page.getByRole("textbox", { name: copy["s16.chat.prompt"], exact: true }); await composer.waitFor();
     expect(await composer.isDisabled()).toBe(false); expect(await page.getByText(copy["s16.chat.originalNotFound"], { exact: true }).count()).toBe(0);
     expect(await page.locator(".memory").count()).toBe(0); expect(page.url()).toMatch(/\/s16\/chat\/[A-Za-z0-9_-]+$/); expect(errors).toEqual([]);

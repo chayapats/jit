@@ -15,7 +15,7 @@ export const desktopLimits = Object.freeze({ assets: 12, assetBytes: 4 * 1024 * 
  * Builds a standalone browser-owned client package over the existing service. Only explicitly supplied public
  * source and existing Jit icons enter it; no Request, session, hostname or API projection is an input.
  */
-export function buildDesktopPackage(input: { script: string; style: string; worklet: string; icons: { size: 192 | 512; body: Uint8Array<ArrayBuffer> }[] }): DesktopPackage {
+export function buildDesktopPackage(input: { script: string; style: string; worklet: string; icons: { size: 192 | 512; body: Uint8Array<ArrayBuffer> }[]; fonts?: { name: string; body: Uint8Array<ArrayBuffer>; contentType: string }[] }): DesktopPackage {
   const assets: DesktopAsset[] = [], bodies = new Map<string, Uint8Array<ArrayBuffer>>();
   const add = (name: string, body: Uint8Array<ArrayBuffer>, contentType: string) => {
     if (body.byteLength > desktopLimits.assetBytes) throw new Error("desktop_asset_limit");
@@ -24,12 +24,15 @@ export function buildDesktopPackage(input: { script: string; style: string; work
     assets.push({ path, sha256, bytes: body.byteLength, contentType }); bodies.set(path, body); return path;
   };
   const script = add("client.js", encoder.encode(input.script), "text/javascript; charset=utf-8");
-  const style = add("style.css", encoder.encode(input.style), "text/css; charset=utf-8");
+  // Public font files and their licence text: the stylesheet names each one as `jit-font:<name>` and receives its content address.
+  let css = input.style;
+  for (const font of input.fonts ?? []) { if (!/^[a-z0-9-]{1,48}\.(?:woff2|txt)$/.test(font.name)) throw new Error("desktop_font_invalid"); css = css.replaceAll(`jit-font:${font.name}`, add(font.name, font.body, font.contentType)); }
+  const style = add("style.css", encoder.encode(css), "text/css; charset=utf-8");
   add("voice-worklet.js", encoder.encode(input.worklet), "text/javascript; charset=utf-8");
   if (input.icons.length !== 2 || !input.icons.some(icon => icon.size === 192) || !input.icons.some(icon => icon.size === 512)) throw new Error("desktop_icons_invalid");
   const icons = input.icons.map(icon => ({ src: add(`icon-${icon.size}.png`, icon.body, "image/png"), sizes: `${icon.size}x${icon.size}`, type: "image/png", purpose: "any" }));
-  const manifest = add("manifest.webmanifest", encoder.encode(JSON.stringify({ id: "/s16/", name: "Jit", short_name: "Jit", start_url: "/s16/", scope: "/s16/", display: "standalone", background_color: "#101116", theme_color: "#101116", icons })), "application/manifest+json");
-  const shell = (locale: "en" | "th") => `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#101116"><title>Jit</title><link rel="manifest" href="${manifest}"><link rel="icon" href="${icons[0]!.src}"><link rel="stylesheet" href="${style}"><script type="module" src="${script}"></script></head><body><div id="root"></div></body></html>`;
+  const manifest = add("manifest.webmanifest", encoder.encode(JSON.stringify({ id: "/s16/", name: "Jit", short_name: "Jit", start_url: "/s16/", scope: "/s16/", display: "standalone", background_color: "#0a0a0a", theme_color: "#0a0a0a", icons })), "application/manifest+json");
+  const shell = (locale: "en" | "th") => `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafaf9"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0a"><title>Jit</title><link rel="manifest" href="${manifest}"><link rel="icon" href="${icons[0]!.src}"><link rel="stylesheet" href="${style}"><script type="module" src="${script}"></script></head><body><div id="root"></div></body></html>`;
   const shells = { en: add("shell-en.html", encoder.encode(shell("en")), "text/html; charset=utf-8"), th: add("shell-th.html", encoder.encode(shell("th")), "text/html; charset=utf-8") };
   assets.sort((a, b) => a.path.localeCompare(b.path));
   if (assets.length > desktopLimits.assets || assets.reduce((sum, asset) => sum + asset.bytes, 0) > desktopLimits.packageBytes) throw new Error("desktop_package_limit");

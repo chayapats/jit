@@ -77,7 +77,7 @@ browserTest.each([1440, 390])("library search, provenance, explicit revise, revi
     await prompt.press("Enter");
     await page.getByRole("button", { name: fill("s16.artifact.preview", { name: "brief-v2.md" }), exact: true }).waitFor();
     // History: the new revision names its exact parent; the original bytes are unchanged.
-    if (width === 390) await page.getByRole("button", { name: copy["s16.nav.more"], exact: true }).click();
+    if (width === 390) await page.getByRole("button", { name: copy["s16.common.menu"], exact: true }).click();
     await page.getByRole("button", { name: copy["s16.nav.artifacts"], exact: true }).click();
     await page.waitForURL("**/s16/artifacts");
     await page.getByRole("button", { name: fill("s16.artifact.open", { name: "brief-v2.md" }), exact: true }).click();
@@ -96,7 +96,7 @@ browserTest.each([1440, 390])("library search, provenance, explicit revise, revi
     await produce(f, { name: "later.md", text: "# Later\n" }, "9");
     await page.getByRole("button", { name: copy["s16.common.refresh"], exact: true }).click();
     await page.getByRole("button", { name: fill("s16.artifact.open", { name: "later.md" }), exact: true }).waitFor();
-    if (width === 390) await page.locator(".mobile-nav").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
+    if (width === 390) await page.locator(".chat-header").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
     else await page.locator(".rail .bot").click();
     await page.waitForURL(/\/s16\/chat\/[A-Za-z0-9_-]+$/); await page.reload(); await prompt.waitFor(); expect(page.url()).toMatch(/\/s16\/chat\//);
     expect(errors).toEqual([]); expect(external).toEqual([]); expect(f.vmCalls).toEqual([]);

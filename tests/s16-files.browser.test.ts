@@ -137,7 +137,7 @@ browserTest.each([{ width: 1440, status: 401, kind: "download" }, { width: 390, 
     await page.goto("http://localhost:3099/s16/chat/conversation"); const artifact = page.getByRole("button", { name: en[`s16.artifact.${scenario.kind}` as "s16.artifact.preview"].replace("{name}", "brief.md"), exact: true }); await artifact.waitFor();
     await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).fill("Private first draft");
     if (scenario.width === 390) await page.getByRole("button", { name: en["s16.common.menu"], exact: true }).click();
-    await page.getByRole("button", { name: "＋ " + en["s16.chat.new"], exact: true }).click();
+    await page.locator(".rail").getByRole("button", { name: en["s16.chat.new"], exact: true }).click();
     await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).fill("Private second draft"); await page.goBack(); await artifact.waitFor();
     reject = true; await artifact.click(); await page.getByText(en["s16.common.authenticationRequired"], { exact: true }).waitFor();
     expect(await page.locator(".recent button,.exchange,.upload-chip,.inspector").count()).toBe(0);

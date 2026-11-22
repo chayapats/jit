@@ -98,10 +98,11 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
     catch (error) { if (error instanceof JitClientError && error.status === 404) setAbsent(entry.requestId); else throw error; }
   }
   return <>
-    {snapshot.conversation.rows.length === 0 && <UiText ui={ui}>{ui.t("s16.chat.empty")}</UiText>}
-    {snapshot.conversation.rows.map(row => <View key={row.requestId} style={ui.styles.card}>
-      <UiText ui={ui} selectable style={ui.styles.message}>{row.ownerMessage}</UiText>
-      <UiText ui={ui} style={ui.styles.muted}>{ui.t(statusKey(row.state))}</UiText>
+    {snapshot.conversation.rows.length === 0 && <UiText ui={ui} accessibilityRole="header" style={ui.styles.title}>{ui.t("s16.chat.empty")}</UiText>}
+    {snapshot.conversation.rows.map(row => <View key={row.requestId} style={ui.styles.turn}>
+      <View style={ui.styles.bubble}><UiText ui={ui} selectable>{row.ownerMessage}</UiText></View>
+      <View style={ui.styles.reply}>
+      <View style={ui.styles.status}><View style={[ui.styles.dot, { backgroundColor: row.state === "done" ? ui.colors.ok : row.progress.active ? ui.colors.text : ui.colors.warn }]} /><UiText ui={ui} style={ui.styles.muted}>{ui.t(statusKey(row.state))}</UiText></View>
       {row.result && <UiText ui={ui} selectable>{row.result.text}</UiText>}
       {row.needsYou && <UiText ui={ui}>{ui.t("s16.chat.hold")} · {row.needsYou.code}</UiText>}
       {row.files?.inputs.map(file => <UiText ui={ui} key={file.id}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>)}
@@ -113,8 +114,9 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
         {preview === artifact.id && <NativePreview ui={ui} session={session} artifact={artifact} html={capability.artifacts.available && capability.artifacts.html === "sandboxed_static"} onFailure={onFailure} />}
         <Button ui={ui} secondary label={ui.t("s16.artifact.download", { name: artifact.name })} disabled={busy} onPress={() => { void run(() => files.export(artifact)); }} />
       </View>)}
+      </View>
     </View>)}
-    <View style={ui.styles.card}>
+    <View style={ui.styles.composerCard}>
       {pending === null ? <ActivityIndicator color={ui.colors.accent} accessibilityLabel={ui.t("s16.common.loading")} /> : pending.length > 0 ? <>
         <UiText ui={ui}>{ui.t("s16.chat.unknown")}</UiText>
         {pending.map(entry => <View key={entry.requestId} style={ui.styles.card}>

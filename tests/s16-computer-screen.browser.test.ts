@@ -60,7 +60,9 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await inputs(sent, 1);
     expect(sent[0]).toMatchObject({ kind: "click", button: "left", double: false });
     const click = sent[0] as Extract<VmScreenInput, { kind: "click" }>;
-    expect(Math.abs(click.x - 640)).toBeLessThanOrEqual(2); expect(Math.abs(click.y - 200)).toBeLessThanOrEqual(2);
+    // Click events carry whole CSS pixels while the laid-out frame may start on a fraction, so one CSS pixel of the frame is the bound.
+    const pixel = Math.ceil(1280 / box.width);
+    expect(Math.abs(click.x - 640)).toBeLessThanOrEqual(pixel); expect(Math.abs(click.y - 200)).toBeLessThanOrEqual(pixel);
     // A double click is one double click on the computer, never two singles or three presses.
     await image.dblclick({ position: { x: box.width / 2, y: box.height / 4 } });
     await inputs(sent, 2); await Bun.sleep(700);

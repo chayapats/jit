@@ -874,7 +874,7 @@ export async function composeS15(options: S15CompositionOptions) {
       ...options.web,
       ...(githubConnections ? { accounts: { list: (owner: OwnerActor) => [...(options.web?.accounts?.list(owner) ?? []).filter(row => row.id !== 'github'),
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
-      { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
+      { origin: options.origin, cookieName, home: '/s16', loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
     // AUTH16-01: an installed default policy without the revision-3 rules shows the accept banner; it is never rewritten here.
     const policyUpdate = (actor: OwnerActor) => {

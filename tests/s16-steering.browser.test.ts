@@ -39,7 +39,7 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     await page.getByText(copy["s16.steer.hint"], { exact: false }).waitFor({ timeout: 15000 });
     await page.getByRole("button", { name: copy["s16.steer.newChat"], exact: true }).waitFor();
     expect(await noOverflow()).toBe(true);
-    const attach = page.getByRole("button", { name: `＋ ${copy["s16.files.attach"]}` });
+    const attach = page.getByRole("button", { name: copy["s16.files.attach"], exact: true });
     expect(await attach.isDisabled()).toBe(false);
     await composer.fill("Also list the files you looked at.");
     await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();

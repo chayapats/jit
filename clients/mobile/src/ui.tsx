@@ -7,26 +7,31 @@ import type { Locale } from "../../../src/i18n";
 export function useUi(locale: Locale) {
   const dark = useColorScheme() === "dark";
   return useMemo(() => {
+    // Jit design tokens (src/web-design.ts, ui.design_tokens/v1): monochrome surfaces, no brand accent.
     const colors = dark
-      ? { background: "#14151a", card: "#202127", text: "#f4f4f7", muted: "#c2c3cf", line: "#545666", accent: "#c5caff", onAccent: "#15172a", notice: "#3e2c24" }
-      : { background: "#f8f8fa", card: "#ffffff", text: "#20212a", muted: "#535664", line: "#a3a5b1", accent: "#343956", onAccent: "#ffffff", notice: "#fff1e6" };
+      ? { background: "#0a0a0a", card: "#141414", raised: "#1c1c1c", text: "#ededed", muted: "#a3a3a3", line: "#2e2e2e", accent: "#ededed", onAccent: "#0a0a0a", notice: "#1c1c1c", ok: "#86efac", warn: "#fde047" }
+      : { background: "#fafaf9", card: "#ffffff", raised: "#f0f0ee", text: "#0a0a0a", muted: "#525252", line: "#dededb", accent: "#0a0a0a", onAccent: "#fafaf9", notice: "#f4f4f3", ok: "#15803d", warn: "#8f5706" };
     const styles = StyleSheet.create({
       fill: { flex: 1 }, safe: { flex: 1, backgroundColor: colors.background },
-      header: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", padding: 16, gap: 12 },
-      brand: { fontSize: 26, fontWeight: "700", color: colors.text }, title: { fontSize: 24, fontWeight: "600", color: colors.text },
-      text: { fontSize: 16, color: colors.text }, muted: { fontSize: 14, color: colors.muted },
-      content: { padding: 16, gap: 14, paddingBottom: 28 }, center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 24 },
-      input: { borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 14, minHeight: 48, color: colors.text, backgroundColor: colors.card, fontSize: 16 },
-      composer: { minHeight: 100, textAlignVertical: "top" },
-      button: { backgroundColor: colors.accent, paddingHorizontal: 16, paddingVertical: 13, minHeight: 48, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+      header: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 10, gap: 12 },
+      brand: { fontSize: 24, fontWeight: "700", letterSpacing: -0.5, color: colors.text }, title: { fontSize: 26, fontWeight: "700", letterSpacing: -0.5, color: colors.text },
+      text: { fontSize: 16, lineHeight: 24, color: colors.text }, muted: { fontSize: 14, lineHeight: 20, color: colors.muted },
+      content: { paddingHorizontal: 20, paddingTop: 8, gap: 14, paddingBottom: 32 }, center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 24 },
+      input: { borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, minHeight: 50, color: colors.text, backgroundColor: colors.card, fontSize: 16 },
+      composer: { minHeight: 56, maxHeight: 200, textAlignVertical: "top", borderWidth: 0, backgroundColor: "transparent", paddingHorizontal: 6, paddingVertical: 6 },
+      composerCard: { padding: 12, gap: 10, borderWidth: 1, borderColor: colors.line, borderRadius: 24, backgroundColor: colors.card },
+      button: { backgroundColor: colors.accent, paddingHorizontal: 20, paddingVertical: 12, minHeight: 48, borderRadius: 999, alignItems: "center", justifyContent: "center" },
       buttonText: { color: colors.onAccent, fontSize: 16, fontWeight: "600", textAlign: "center" },
-      secondary: { backgroundColor: colors.card, borderColor: colors.line, borderWidth: 1 }, secondaryText: { color: colors.text },
-      disabled: { opacity: 0.5 }, actions: { gap: 10, flexDirection: "row", flexWrap: "wrap" },
-      tabs: { padding: 8, gap: 4, flexDirection: "row", borderTopWidth: 1, borderColor: colors.line, backgroundColor: colors.card },
-      tab: { flex: 1, minHeight: 48, paddingVertical: 12, paddingHorizontal: 4, alignItems: "center", justifyContent: "center", borderRadius: 10 },
-      selectedTab: { backgroundColor: colors.accent }, tabText: { color: colors.text, fontSize: 14, textAlign: "center" }, selectedTabText: { color: colors.onAccent },
-      card: { padding: 16, gap: 10, borderWidth: 1, borderColor: colors.line, borderRadius: 14, backgroundColor: colors.card },
-      message: { fontSize: 16, fontWeight: "600", color: colors.text }, notice: { padding: 16, gap: 8, backgroundColor: colors.notice },
+      secondary: { backgroundColor: "transparent", borderColor: colors.line, borderWidth: 1 }, secondaryText: { color: colors.text, fontWeight: "500" },
+      disabled: { opacity: 0.4 }, actions: { gap: 10, flexDirection: "row", flexWrap: "wrap" },
+      tabs: { paddingHorizontal: 10, paddingVertical: 6, gap: 4, flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.line, backgroundColor: colors.background },
+      tab: { flex: 1, minHeight: 48, paddingVertical: 10, paddingHorizontal: 4, alignItems: "center", justifyContent: "center", borderRadius: 999 },
+      selectedTab: { backgroundColor: colors.raised }, tabText: { color: colors.muted, fontSize: 14, fontWeight: "500", textAlign: "center" }, selectedTabText: { color: colors.text, fontWeight: "700" },
+      card: { padding: 16, gap: 10, borderWidth: 1, borderColor: colors.line, borderRadius: 18, backgroundColor: colors.card },
+      message: { fontSize: 16, lineHeight: 24, fontWeight: "600", color: colors.text },
+      notice: { marginHorizontal: 20, marginBottom: 8, padding: 14, gap: 6, backgroundColor: colors.notice, borderRadius: 14, borderLeftWidth: 3, borderLeftColor: colors.warn },
+      turn: { gap: 12, marginBottom: 10 }, bubble: { alignSelf: "flex-end", maxWidth: "88%", backgroundColor: colors.raised, borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 16, paddingVertical: 10 },
+      reply: { gap: 10 }, status: { flexDirection: "row", alignItems: "center", gap: 7 }, dot: { width: 7, height: 7, borderRadius: 4 },
       payload: { fontFamily: "monospace", fontSize: 13, color: colors.text }, preview: { minHeight: 360, height: 480, backgroundColor: colors.card },
     });
     return { locale, dark, t: copy(locale), colors, styles };

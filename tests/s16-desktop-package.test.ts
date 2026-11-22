@@ -24,6 +24,18 @@ test("public package identity covers every byte and retains the exact neutral de
   expect(() => buildDesktopPackage({ ...input, script: "x".repeat(desktopLimits.assetBytes + 1) })).toThrow("desktop_asset_limit");
 });
 
+test("packaged fonts are content-addressed public assets that the stylesheet names by hash", () => {
+  const input = { script: "/* public client */", style: '@font-face{font-family:"Inter";src:url("jit-font:inter.woff2")}', worklet: "/* audio */", icons: ([192, 512] as const).map(size => ({ size, body: new Uint8Array([size / 2]) })) };
+  const font = { name: "inter.woff2", body: new Uint8Array([1, 2, 3]), contentType: "font/woff2" };
+  const built = buildDesktopPackage({ ...input, fonts: [font] }), asset = built.release.assets.find(entry => entry.path.endsWith("/inter.woff2"))!;
+  expect(built.release.assets).toHaveLength(9); expect(asset.contentType).toBe("font/woff2"); expect(asset.path).toContain(asset.sha256);
+  const style = new TextDecoder().decode(built.bodies.get(built.release.assets.find(entry => entry.path.endsWith("/style.css"))!.path));
+  expect(style).toContain(`url("${asset.path}")`); expect(style).not.toContain("jit-font:");
+  // A different font byte changes the stylesheet address and therefore the release identity.
+  expect(buildDesktopPackage({ ...input, fonts: [{ ...font, body: new Uint8Array([1, 2, 4]) }] }).release.id).not.toBe(built.release.id);
+  for (const name of ["../inter.woff2", "Inter.woff2", "inter.ttf", "a/b.woff2", ""]) expect(() => buildDesktopPackage({ ...input, fonts: [{ ...font, name }] })).toThrow("desktop_font_invalid");
+});
+
 test("desktop document paths never encode action/query/protocol/deep-link commands", () => {
   for (const path of ["/s16", "/s16/", "/s16/chat/conversation", "/s16/bots/new", "/s16/memory", "/s16/computers"]) expect(desktopDocument(path)).toBe(true);
   for (const path of ["https://evil.test/s16", "//evil.test/s16", "javascript:alert(1)", "/s16?approve=yes", "/s16/chat/a/decide", "/s16/chat/../settings", "/api/s16/client/session", "/work", "/s160", "/s16/unknown", "/s16/chat/%2fowner"]) expect(desktopDocument(path)).toBe(false);
@@ -52,6 +64,12 @@ test("actual bundle ships public immutable inventory but keeps session, legacy a
     if (asset.path.endsWith("client.js")) { const text = new TextDecoder().decode(bytes); expect(text).toContain("Apache License"); expect(text).toContain("Rakazo"); }
   }
   expect(auth).toBe(0);
+  // The Jit typefaces and their licence texts ship in the package; the served stylesheet names them by content address only.
+  const fonts = release.assets.filter((asset: { path: string }) => asset.path.endsWith(".woff2")).map((asset: { path: string }) => asset.path);
+  expect(fonts).toHaveLength(2); expect(release.assets.some((asset: { path: string }) => asset.path.endsWith("/font-licenses.txt"))).toBe(true);
+  const packagedStyle = await (await request(release.assets.find((asset: { path: string }) => asset.path.endsWith("/style.css")).path)).text();
+  for (const path of fonts) expect(packagedStyle).toContain(`url("${path}")`);
+  expect(packagedStyle).not.toContain("jit-font:"); expect(packagedStyle).not.toMatch(/url\("(?!\/s16\/assets\/)/);
   for (const path of ["/s16", "/s16/client.js", "/s16/voice-worklet.js"]) expect((await request(path)).status).toBe(401);
   expect(auth).toBe(3);
   expect((await request("/s16/desktop-release.json", "GET", "evil.test")).status).toBe(403);
