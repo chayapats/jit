@@ -71,7 +71,8 @@ main{min-width:0;display:flex;flex-direction:column;height:100dvh;background:var
 .rail-secondary{flex:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
 .notify-control,.language-control{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:7px 10px;font-size:13px;color:var(--fg2)}
 .notify-control>span,.language-control>span{flex:1;min-width:0}
-.notify-control button{flex:none;padding:3px 10px;font-size:12px;border-radius:999px}
+.notify-control>span{flex:1 0 calc(100% - 28px)}
+.notify-control button{flex:none;margin-left:28px;padding:3px 10px;font-size:12px;border-radius:999px}
 .language-control select{flex:none;padding:3px 6px;font-size:13px;border-radius:8px;background:var(--s1)}
 .desktop-panel{margin:0;font-size:13px}
 .desktop-panel>summary{list-style:none}

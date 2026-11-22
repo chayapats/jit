@@ -104,12 +104,14 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
     {header}
     {snapshot.conversation.rows.length === 0 && <UiText ui={ui} accessibilityRole="header" style={ui.styles.title}>{ui.t("s16.chat.empty")}</UiText>}
     {snapshot.conversation.rows.map(row => <View key={row.requestId} style={ui.styles.turn}>
-      <View style={ui.styles.bubble}><UiText ui={ui} selectable>{row.ownerMessage}</UiText></View>
+      {(!!row.ownerMessage || !!row.files?.inputs.length) && <View style={ui.styles.bubble}>
+        {!!row.ownerMessage && <UiText ui={ui} selectable>{row.ownerMessage}</UiText>}
+        {row.files?.inputs.map(file => <UiText ui={ui} key={file.id} style={ui.styles.muted}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>)}
+      </View>}
       <View style={ui.styles.reply}>
       <View style={ui.styles.status}><View style={[ui.styles.dot, { backgroundColor: row.state === "done" ? ui.colors.ok : row.progress.active ? ui.colors.text : ui.colors.warn }]} /><UiText ui={ui} style={ui.styles.muted}>{ui.t(statusKey(row.state))}</UiText></View>
       {row.result && <UiText ui={ui} selectable>{row.result.text}</UiText>}
       {row.needsYou && <UiText ui={ui}>{ui.t("s16.chat.hold")} · {row.needsYou.code}</UiText>}
-      {row.files?.inputs.map(file => <UiText ui={ui} key={file.id}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>)}
       {capability.exactDecisions && row.slips.filter(slip => slip.state === "pending").map(slip => <ExactCard key={`${slip.action.id}:${slip.action.revision}:${slip.action.actionHash}`} ui={ui} session={session} commands={commands} slip={slip} onFailure={onFailure} />)}
       {row.progress.active && <Button ui={ui} secondary label={ui.t("s16.chat.stop")} disabled={busy} onPress={() => { void run(async () => { await session.perform((client, signal) => client.stop(row.requestId, signal)); await session.poll(); }); }} />}
       {row.files?.artifacts.map(artifact => <View key={artifact.id} style={ui.styles.card}>
